@@ -1,0 +1,61 @@
+{
+  "manifest_version": 3,
+  "name": "AI Search Filter",
+  "version": "1.0.0",
+  "description": "Multi-layer content filter: page-level Claude classification + per-site NSFW CSS + post text classification + image vision check.",
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "permissions": ["storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "exclude_matches": ["*://api.anthropic.com/*"],
+      "js": ["content-script.js", "image-scanner.js", "post-scanner.js"],
+      "css": ["hide.css"],
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": ["*://*.reddit.com/*"],
+      "css": ["site-filters/reddit.css"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["*://*.twitter.com/*", "*://x.com/*"],
+      "css": ["site-filters/twitter.css"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["*://www.youtube.com/*"],
+      "css": ["site-filters/youtube.css"],
+      "run_at": "document_start"
+    }
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["block.html"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "action": {
+    "default_title": "AI Search Filter — right-click → Options",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  }
+}

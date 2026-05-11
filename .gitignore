@@ -1,0 +1,6 @@
+aisf-*.zip
+_zipcheck/
+.claude/
+.vscode/
+.DS_Store
+Thumbs.db

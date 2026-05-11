@@ -1,0 +1,40 @@
+/* Reddit Layer 2: hide self-tagged NSFW posts and previews.
+   These selectors target Reddit's own NSFW markers. Reddit auto-tags or
+   moderator-tags adult content, so this catches most porn previews in feeds. */
+
+/* New Reddit (shreddit) — NSFW attribute on post elements */
+shreddit-post[nsfw="true"],
+shreddit-post[nsfw],
+[data-nsfw="true"] {
+  display: none !important;
+}
+
+/* New Reddit gallery / media tagged NSFW */
+shreddit-feed [content-href*="?nsfw=true"],
+shreddit-post:has([nsfw-status]) {
+  display: none !important;
+}
+
+/* Old Reddit — posts have .over18 class */
+.thing.over18,
+div.over18,
+.thumbnail.nsfw {
+  display: none !important;
+}
+
+/* NSFW thumbnails / "thumbnail-nsfw" */
+img[src*="nsfw"] {
+  visibility: hidden !important;
+}
+
+/* Subreddit-level NSFW landing page should still be visible enough to navigate away */
+/* but block the body content */
+.over18-interstitial ~ .thing {
+  display: none !important;
+}
+
+/* Hide NSFW indicator badges everywhere (cosmetic) */
+.nsfw-badge,
+[data-testid="nsfw-badge"] {
+  display: none !important;
+}

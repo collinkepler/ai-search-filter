@@ -1,0 +1,20 @@
+/* YouTube Layer 2: hide age-restricted and sensitive content thumbnails. */
+
+/* Age-restricted videos in feeds */
+ytd-rich-item-renderer:has([aria-label*="Age restricted"]),
+ytd-video-renderer:has([aria-label*="Age restricted"]),
+ytd-compact-video-renderer:has([aria-label*="Age restricted"]) {
+  display: none !important;
+}
+
+/* "Inappropriate or offensive" overlays */
+ytd-rich-item-renderer:has([class*="inappropriate"]),
+ytd-video-renderer:has([class*="inappropriate"]) {
+  display: none !important;
+}
+
+/* Items with badge for restricted content */
+ytd-badge-supported-renderer[label*="age-restricted"],
+ytd-badge-supported-renderer[aria-label*="age-restricted"] {
+  display: none !important;
+}

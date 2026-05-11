@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Blocked</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: #0a0a0a;
+      color: #e5e5e5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 24px;
+    }
+    .card {
+      max-width: 560px;
+      width: 100%;
+    }
+    h1 {
+      font-size: 36px;
+      margin: 0 0 8px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #ef4444;
+    }
+    .sub {
+      color: #999;
+      font-size: 15px;
+      margin-bottom: 28px;
+    }
+
+    .info-card {
+      background: #161616;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+    }
+    .info-card.highlight {
+      background: #1a1010;
+      border: 1px solid #3a1f1f;
+      border-left: 4px solid #ef4444;
+    }
+    .info-label {
+      color: #888;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 8px;
+      font-weight: 700;
+    }
+    .info-card.highlight .info-label {
+      color: #ef4444;
+    }
+    .info-value {
+      color: #e5e5e5;
+      font-size: 15px;
+      line-height: 1.5;
+      overflow-wrap: break-word;
+    }
+    .info-value.query {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 13px;
+    }
+    .info-value.missing {
+      color: #666;
+      font-style: italic;
+    }
+
+    .nudge {
+      color: #888;
+      font-size: 13px;
+      line-height: 1.55;
+      margin: 20px 0;
+      padding: 0 4px;
+    }
+
+    details {
+      margin-top: 20px;
+      background: #0f0f0f;
+      border: 1px solid #1f1f1f;
+      border-radius: 6px;
+      padding: 0;
+    }
+    details summary {
+      cursor: pointer;
+      padding: 10px 14px;
+      color: #888;
+      font-size: 12px;
+      user-select: none;
+    }
+    details[open] summary {
+      border-bottom: 1px solid #1f1f1f;
+    }
+    details pre {
+      margin: 0;
+      padding: 12px 14px;
+      color: #ccc;
+      font-size: 11px;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      line-height: 1.5;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 24px;
+    }
+    button {
+      flex: 1;
+      min-width: 120px;
+      background: #1a1a1a;
+      color: #e5e5e5;
+      border: 1px solid #333;
+      padding: 12px 18px;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    button:hover { background: #222; border-color: #444; }
+    button.primary {
+      background: #e5e5e5;
+      color: #0a0a0a;
+      border-color: #e5e5e5;
+      font-weight: 600;
+    }
+    button.primary:hover { background: #fff; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Blocked.</h1>
+    <div class="sub" id="subtitle">This was caught by one of your rules.</div>
+
+    <div class="info-card">
+      <div class="info-label">You tried to open</div>
+      <div class="info-value query" id="q"></div>
+    </div>
+
+    <div class="info-card highlight">
+      <div class="info-label">Matched rule</div>
+      <div class="info-value" id="rule"></div>
+    </div>
+
+    <div class="info-card highlight">
+      <div class="info-label">Claude's reasoning</div>
+      <div class="info-value" id="reason"></div>
+    </div>
+
+    <div class="nudge">Was this what you wanted when you set the rule? If not, edit it in extension options.</div>
+
+    <details id="debug">
+      <summary>Show debug info</summary>
+      <pre id="debugPre"></pre>
+    </details>
+
+    <div class="actions">
+      <button class="primary" id="back">Go back</button>
+      <button id="opts">Edit rules</button>
+    </div>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+
+    // Pull all values (supporting both new 'rule' and old 'category' param names)
+    const q = params.get('q') || '';
+    const rule = params.get('rule') || params.get('category') || '';
+    const reason = params.get('reason') || '';
+    const errorMsg = params.get('error') || '';
+    const fromCache = params.get('fromCache') === '1';
+    const raw = params.get('raw') || '';
+
+    // Subtitle - show error context if there was one
+    if (errorMsg) {
+      document.getElementById('subtitle').textContent =
+        'Blocked due to: ' + errorMsg + ' (you\'re in fail-closed mode).';
+    }
+
+    // Query
+    const qEl = document.getElementById('q');
+    if (q) {
+      qEl.textContent = q;
+    } else {
+      qEl.textContent = '(query info not provided)';
+      qEl.classList.add('missing');
+    }
+
+    // Rule
+    const ruleEl = document.getElementById('rule');
+    if (rule) {
+      ruleEl.textContent = rule;
+    } else {
+      ruleEl.textContent = "(Claude didn't specify which rule matched)";
+      ruleEl.classList.add('missing');
+    }
+
+    // Reason
+    const reasonEl = document.getElementById('reason');
+    if (reason) {
+      reasonEl.textContent = reason;
+    } else {
+      reasonEl.textContent = '(no reason was returned)';
+      reasonEl.classList.add('missing');
+    }
+
+    // Debug
+    const debugData = {
+      query: q || '(empty)',
+      rule: rule || '(empty)',
+      reason: reason || '(empty)',
+      fromCache: fromCache,
+      error: errorMsg || '(none)',
+      rawClaudeResponse: raw || '(not provided)',
+      allUrlParams: Object.fromEntries(params)
+    };
+    document.getElementById('debugPre').textContent = JSON.stringify(debugData, null, 2);
+
+    // Auto-open debug if data is missing
+    if (!rule || !reason) {
+      document.getElementById('debug').open = true;
+    }
+
+    document.getElementById('back').addEventListener('click', () => {
+      if (history.length > 1) history.back();
+      else window.close();
+    });
+    document.getElementById('opts').addEventListener('click', () => {
+      chrome.runtime.openOptionsPage && chrome.runtime.openOptionsPage();
+    });
+  </script>
+</body>
+</html>

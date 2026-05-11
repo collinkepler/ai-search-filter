@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Privacy Policy — AI Search Filter</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body { font: 16px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 720px; margin: 2em auto; padding: 0 1em; color: #222; }
+  h1 { border-bottom: 1px solid #ddd; padding-bottom: .3em; }
+  h2 { margin-top: 1.6em; }
+  code { background: #f4f4f4; padding: 0 .25em; border-radius: 3px; }
+  a { color: #1e64b4; }
+</style>
+</head>
+<body>
+
+<h1>Privacy Policy — AI Search Filter</h1>
+<p><em>Last updated: 2026-05-11</em></p>
+
+<p>AI Search Filter ("the extension") is a Chrome extension that filters web content according to rules you write, by sending content from the pages you visit to Anthropic's Claude API for classification.</p>
+<p>This policy explains exactly what data leaves your browser, where it goes, and what stays local.</p>
+
+<h2>Single purpose</h2>
+<p>The extension exists for one purpose: <strong>to filter web page content according to user-defined natural-language rules using Anthropic's Claude API</strong>. It is not used for analytics, advertising, tracking, or any unrelated purpose.</p>
+
+<h2>Data sent to Anthropic</h2>
+<p>When you enable a filtering layer in Options, the extension sends data to <code>https://api.anthropic.com/v1/messages</code> so that Claude can evaluate it against your rules. Depending on which layers are enabled:</p>
+<ul>
+  <li><strong>Page layer</strong> (off by default): the page's URL, <code>&lt;title&gt;</code>, and <code>&lt;meta name="description"&gt;</code> content.</li>
+  <li><strong>Image layer</strong> (off by default): image URLs from the current page. Anthropic fetches the image bytes server-side; the extension does not proxy image bytes.</li>
+  <li><strong>Post text layer</strong> (off by default): the text of posts on supported feed sites (currently Reddit, Twitter/X, YouTube). Post text is batched and sent in groups.</li>
+  <li><strong>Site CSS layer</strong> (on by default): <strong>sends no data</strong>. It is pure CSS injected locally to hide UI elements on specific sites.</li>
+</ul>
+<p>Anthropic's handling of API data is governed by Anthropic's own privacy policy: <a href="https://www.anthropic.com/legal/privacy">https://www.anthropic.com/legal/privacy</a>.</p>
+
+<h2>Data NOT sent</h2>
+<ul>
+  <li>The extension does <strong>not</strong> send data from pages on your "Always-allow domains" list — those pages skip all layers entirely.</li>
+  <li>The extension does <strong>not</strong> send analytics, telemetry, crash reports, or usage statistics anywhere.</li>
+  <li>The extension does <strong>not</strong> transmit your API key to anyone except Anthropic, and only as the <code>x-api-key</code> request header.</li>
+  <li>The extension does <strong>not</strong> share data with any third party other than Anthropic.</li>
+</ul>
+
+<h2>What is stored locally</h2>
+<p>Stored only in your browser's <code>chrome.storage.local</code>, never transmitted:</p>
+<ul>
+  <li>Your Anthropic API key (stored in plaintext — readable from disk by anyone with access to your Chrome profile).</li>
+  <li>Your rules and settings.</li>
+  <li>A page-verdict cache (default 7 days).</li>
+  <li>An image-verdict cache (default 30 days).</li>
+</ul>
+<p>You can clear all local data by removing the extension via <code>chrome://extensions</code>.</p>
+
+<h2>Categories of data per Chrome Web Store taxonomy</h2>
+<ul>
+  <li><strong>Personally identifiable information</strong>: No.</li>
+  <li><strong>Health, financial, authentication, personal communications, or location</strong>: No.</li>
+  <li><strong>Web history</strong>: Yes — page URLs are sent to Anthropic when the Page layer is enabled.</li>
+  <li><strong>Website content</strong>: Yes — page titles, meta descriptions, post text, and image URLs are sent to Anthropic when the corresponding layers are enabled.</li>
+</ul>
+<p>Data is <strong>not sold</strong>, <strong>not used for advertising</strong>, and <strong>not used for any purpose unrelated to the single purpose stated above</strong>.</p>
+
+<h2>Remote code</h2>
+<p>The extension does <strong>not</strong> load or execute remote code. All JavaScript ships in the extension package.</p>
+
+<h2>Contact</h2>
+<p>Questions or requests: <a href="mailto:keplercollin0@gmail.com">keplercollin0@gmail.com</a>.</p>
+
+</body>
+</html>

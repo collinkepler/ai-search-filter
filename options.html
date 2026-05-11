@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AI Search Filter — Settings</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      max-width: 720px;
+      margin: 40px auto;
+      padding: 24px;
+      color: #1a1a1a;
+      background: #fafafa;
+    }
+    h1 { font-size: 26px; margin-bottom: 4px; letter-spacing: -0.02em; }
+    .sub { color: #666; margin-bottom: 32px; font-size: 14px; }
+
+    section { margin-bottom: 32px; }
+    section h2 { font-size: 16px; margin: 0 0 4px; font-weight: 600; }
+    .section-hint { color: #888; font-size: 13px; margin-bottom: 12px; line-height: 1.5; }
+    .section-hint code { background: #eee; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+
+    .layer-card {
+      background: white;
+      border: 1px solid #e5e5e5;
+      border-radius: 8px;
+      padding: 16px 18px;
+      margin-bottom: 12px;
+    }
+    .layer-card.disabled { opacity: 0.6; }
+    .layer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .layer-title { font-size: 15px; font-weight: 600; }
+    .layer-meta { color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 10px; }
+    .layer-controls { margin-top: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .layer-controls label { font-size: 13px; color: #555; }
+    .layer-controls select, .layer-controls input[type=number] {
+      padding: 6px 8px;
+      border: 1px solid #d4d4d4;
+      border-radius: 4px;
+      font-size: 13px;
+      font-family: inherit;
+      background: white;
+    }
+
+    /* Switch */
+    .switch { position: relative; display: inline-block; width: 42px; height: 22px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; cursor: pointer; inset: 0;
+      background-color: #ccc;
+      transition: 0.2s;
+      border-radius: 22px;
+    }
+    .slider:before {
+      position: absolute; content: ""; height: 16px; width: 16px;
+      left: 3px; bottom: 3px;
+      background-color: white;
+      transition: 0.2s;
+      border-radius: 50%;
+    }
+    .switch input:checked + .slider { background-color: #10b981; }
+    .switch input:checked + .slider:before { transform: translateX(20px); }
+
+    .warning {
+      background: #fef3c7;
+      border: 1px solid #fcd34d;
+      border-radius: 6px;
+      padding: 12px 14px;
+      margin-bottom: 24px;
+      font-size: 13px;
+      color: #78350f;
+      line-height: 1.5;
+    }
+    .warning strong { color: #92400e; }
+
+    input[type=password], input[type=text], textarea, select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #d4d4d4;
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: inherit;
+      background: white;
+    }
+    textarea {
+      min-height: 100px;
+      resize: vertical;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    #rules { display: flex; flex-direction: column; gap: 8px; }
+    .rule-row {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      background: white; border: 1px solid #e5e5e5;
+      border-left-width: 4px; border-radius: 6px;
+      padding: 8px 10px;
+    }
+    .rule-scope-row {
+      flex-basis: 100%;
+      display: flex; align-items: center; gap: 8px;
+      padding-top: 6px; margin-top: 6px;
+      border-top: 1px dashed #eee;
+    }
+    .rule-scope-row label { font-size: 11px; color: #888; white-space: nowrap; }
+    .rule-scope-row input {
+      flex: 1; border: 1px solid #e5e5e5; background: #fafafa;
+      padding: 4px 8px; border-radius: 4px;
+      font-size: 12px; font-family: inherit;
+    }
+    .rule-scope-row input:focus { outline: none; border-color: #888; background: white; }
+    .rule-row[data-mode="block"] { border-left-color: #ef4444; }
+    .rule-row[data-mode="allow"] { border-left-color: #10b981; }
+    .rule-row[data-mode="only-allow"] { border-left-color: #6366f1; }
+    .rule-row .rule-text { flex: 1; border: none; background: transparent; padding: 6px 4px; font-size: 14px; font-family: inherit; }
+    .rule-row .rule-text:focus { outline: none; }
+
+    .toggle { display: inline-flex; border: 1px solid #d4d4d4; border-radius: 6px; overflow: hidden; background: #f5f5f5; flex-shrink: 0; }
+    .toggle button { background: transparent; border: none; padding: 6px 12px; font-size: 12px; font-weight: 600; color: #888; cursor: pointer; font-family: inherit; }
+    .toggle button.active[data-mode="block"] { background: #ef4444; color: white; }
+    .toggle button.active[data-mode="allow"] { background: #10b981; color: white; }
+    .toggle button.active[data-mode="only-allow"] { background: #6366f1; color: white; }
+
+    .delete-btn { background: transparent; border: none; color: #aaa; font-size: 20px; width: 28px; height: 28px; border-radius: 4px; cursor: pointer; padding: 0; line-height: 1; flex-shrink: 0; }
+    .delete-btn:hover { background: #fee2e2; color: #991b1b; }
+
+    .add-btn { margin-top: 12px; background: white; color: #1a1a1a; border: 1px dashed #c4c4c4; padding: 10px 14px; border-radius: 6px; font-size: 14px; cursor: pointer; font-family: inherit; width: 100%; text-align: center; }
+    .add-btn:hover { border-color: #1a1a1a; background: #f5f5f5; }
+
+    .empty { color: #aaa; font-size: 13px; text-align: center; padding: 20px; border: 1px dashed #e0e0e0; border-radius: 6px; background: white; }
+
+    .legend { display: flex; gap: 16px; margin-bottom: 12px; font-size: 12px; color: #666; }
+    .legend-item { display: flex; align-items: center; gap: 6px; }
+    .legend-swatch { width: 10px; height: 10px; border-radius: 2px; }
+
+    .actions { display: flex; gap: 8px; margin-top: 24px; align-items: center; }
+    button.primary { background: #1a1a1a; color: white; border: none; padding: 10px 18px; border-radius: 6px; font-size: 14px; cursor: pointer; font-family: inherit; }
+    button.primary:hover { background: #333; }
+    button.secondary { background: white; color: #1a1a1a; border: 1px solid #d4d4d4; padding: 10px 18px; border-radius: 6px; font-size: 14px; cursor: pointer; font-family: inherit; }
+    button.secondary:hover { background: #f5f5f5; }
+
+    .status { margin-left: 8px; font-size: 13px; padding: 6px 10px; border-radius: 4px; opacity: 0; transition: opacity 0.2s; }
+    .status.show { opacity: 1; }
+    .status.ok { background: #d1fae5; color: #065f46; }
+    .status.err { background: #fee2e2; color: #991b1b; }
+
+    .test-panel { background: white; border: 1px solid #e5e5e5; border-radius: 6px; padding: 14px; margin-top: 12px; }
+    .test-row { display: flex; gap: 8px; }
+    .test-result { margin-top: 12px; padding: 12px; border-radius: 6px; font-size: 13px; background: #f3f4f6; display: none; line-height: 1.5; }
+    .test-result.show { display: block; }
+    .test-result.blocked { background: #fee2e2; color: #991b1b; }
+    .test-result.allowed { background: #d1fae5; color: #065f46; }
+    .test-result .label { font-weight: 600; margin-right: 6px; }
+    .test-result code { background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+
+    .lock-card { background: white; border: 1px solid #e5e5e5; border-radius: 8px; padding: 24px; margin-top: 16px; }
+    .lock-card input[type=password] { margin-bottom: 12px; }
+    .lock-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .lock-reset { margin-top: 24px; padding-top: 16px; border-top: 1px solid #eee; font-size: 13px; color: #666; }
+    .lock-reset a { color: #666; text-decoration: underline; cursor: pointer; }
+    .lock-reset a:hover { color: #1a1a1a; }
+    .reset-countdown { color: #78350f; background: #fef3c7; border: 1px solid #fcd34d; padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 13px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+    .password-row { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+    .password-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .password-card { background: white; border: 1px solid #e5e5e5; border-radius: 8px; padding: 16px 18px; }
+  </style>
+</head>
+<body>
+  <div id="lockScreen" style="display:none;">
+    <h1>AI Search Filter</h1>
+    <div class="sub">Settings are locked.</div>
+    <div class="lock-card">
+      <input type="password" id="unlockPassword" placeholder="Enter password" autocomplete="current-password">
+      <div class="lock-actions">
+        <button class="primary" id="unlockBtn">Unlock</button>
+        <span class="status" id="unlockStatus"></span>
+      </div>
+      <div class="lock-reset">
+        <div id="resetIdle">
+          Forgot password? <a id="forgotLink">Start 24-hour reset</a>
+        </div>
+        <div id="resetPending" style="display:none;">
+          <div id="resetCountdown" class="reset-countdown"></div>
+          <div class="lock-actions">
+            <button class="secondary" id="cancelResetBtn">Cancel reset</button>
+            <button class="primary" id="completeResetBtn" style="display:none;">Complete reset</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="content" style="display:none;">
+  <h1>AI Search Filter</h1>
+  <div class="sub">Multi-layer content filter powered by Claude Haiku.</div>
+
+  <div class="warning">
+    <strong>Privacy note:</strong> Visited URLs (outside your allow list) are sent to Anthropic's API. Image scanner and post scanner add image URLs and post text to that. Add sensitive sites to "Always-allow domains" to skip them entirely.
+  </div>
+
+  <section>
+    <h2>API key</h2>
+    <div class="section-hint">Get one at console.anthropic.com → API Keys.</div>
+    <input type="password" id="apiKey" placeholder="sk-ant-...">
+  </section>
+
+  <section id="passwordSection">
+    <h2>Lock settings with a password</h2>
+    <div class="section-hint">Optional. When set, the options page is hidden behind a password. If you forget it, you can start a 24-hour reset.</div>
+    <div class="password-card">
+      <div id="passwordSetMode">
+        <div class="password-row">
+          <input type="password" id="newPassword" placeholder="New password" autocomplete="new-password">
+          <input type="password" id="confirmPassword" placeholder="Confirm password" autocomplete="new-password">
+        </div>
+        <div class="password-actions">
+          <button class="primary" id="setPasswordBtn">Set password</button>
+        </div>
+      </div>
+      <div id="passwordChangeMode" style="display:none;">
+        <div class="password-row">
+          <input type="password" id="currentPassword" placeholder="Current password" autocomplete="current-password">
+          <input type="password" id="changeNewPassword" placeholder="New password" autocomplete="new-password">
+          <input type="password" id="changeConfirmPassword" placeholder="Confirm new password" autocomplete="new-password">
+        </div>
+        <div class="password-actions">
+          <button class="primary" id="changePasswordBtn">Change password</button>
+          <button class="secondary" id="removePasswordBtn">Remove password</button>
+        </div>
+      </div>
+      <div class="password-actions" style="margin-top: 10px;">
+        <span class="status" id="passwordStatus"></span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Rules</h2>
+    <div class="section-hint">
+      Each rule is one topic.
+      <strong>Block</strong> prevents matching content.
+      <strong>Allow</strong> force-allows content that would otherwise be blocked.
+      <strong>Only allow</strong> turns on <em>allowlist mode</em>: as soon as any "Only allow" rule exists, everything not matching one is blocked by default. Block rules still subtract from that set; Allow rules still override blocks.
+      <br>The <em>Applies to</em> field scopes a rule to specific hostnames (e.g. <code>youtube.com</code>) — leave blank to apply on every site. On a site no Only-allow rule scopes to, default-allow takes over.
+    </div>
+    <div class="legend">
+      <div class="legend-item"><span class="legend-swatch" style="background:#ef4444"></span> Block</div>
+      <div class="legend-item"><span class="legend-swatch" style="background:#10b981"></span> Allow (overrides block)</div>
+      <div class="legend-item"><span class="legend-swatch" style="background:#6366f1"></span> Only allow (block everything else)</div>
+    </div>
+    <div id="rules"></div>
+    <div style="display: flex; gap: 8px; margin-top: 12px;">
+      <button class="add-btn" id="addRule" style="margin-top: 0;">+ Add rule</button>
+      <button class="add-btn" id="addStrictPreset" style="margin-top: 0; flex: 0 0 auto; padding: 10px 16px;" title="Append a set of opinionated block rules covering explicit, suggestive, dating, and erotica content. Editable after.">+ Strict anti-sexual-content preset</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Filtering layers</h2>
+    <div class="section-hint">Each layer is independent. Turn on whichever combination works for you.</div>
+
+    <div class="layer-card" id="card-page">
+      <div class="layer-header">
+        <div class="layer-title">Layer 0 — Page-level classification</div>
+        <label class="switch"><input type="checkbox" id="enablePageCheck" checked disabled><span class="slider"></span></label>
+      </div>
+      <div class="layer-meta">Always on. Every page navigation is classified by URL + title + meta description.</div>
+    </div>
+
+    <div class="layer-card" id="card-site">
+      <div class="layer-header">
+        <div class="layer-title">Layer 2 — Site-specific NSFW CSS (Reddit, Twitter, YouTube)</div>
+        <label class="switch"><input type="checkbox" id="enableSiteFilters"><span class="slider"></span></label>
+      </div>
+      <div class="layer-meta">Hides content these sites already tag as NSFW or sensitive. Zero API cost, instant. Catches most porn previews in feeds.</div>
+    </div>
+
+    <div class="layer-card" id="card-image">
+      <div class="layer-header">
+        <div class="layer-title">Layer 1 — NSFW image scanner</div>
+        <label class="switch"><input type="checkbox" id="enableImageScanner"><span class="slider"></span></label>
+      </div>
+      <div class="layer-meta">Every image &gt; min size is blurred immediately on render; the blur clears for safe images and the image is hidden entirely for NSFW (porn or suggestive). Eliminates fast-scroll flashes. Costs ~$0.0005/image (cached 30 days).</div>
+      <div class="layer-controls">
+        <label>Min image size (px):
+          <input type="number" id="imageMinSize" min="50" max="500" step="10" value="80">
+        </label>
+      </div>
+      <div style="margin-top: 12px;">
+        <label style="display:block; font-size:13px; color:#555; margin-bottom:4px;">Skip image scanner on these sites:</label>
+        <textarea id="imageScannerExcludeDomains" placeholder="youtube.com&#10;wikipedia.org" style="min-height: 70px;"></textarea>
+        <div style="color:#888; font-size:12px; margin-top:4px;">One per line. Subdomains included. Saves API cost on sites where image checks aren't important.</div>
+      </div>
+    </div>
+
+    <div class="layer-card" id="card-post">
+      <div class="layer-header">
+        <div class="layer-title">Layer 3 — Feed post text classifier</div>
+        <label class="switch"><input type="checkbox" id="enablePostScanner"><span class="slider"></span></label>
+      </div>
+      <div class="layer-meta">On Reddit, Twitter, YouTube: extracts post titles + channels, batches them, classifies via Claude. Catches text-flagged content even when not NSFW (gambling discussions, drama, etc.).</div>
+      <div class="layer-controls">
+        <label>When flagged:
+          <select id="postAction">
+            <option value="hide">Remove from feed</option>
+            <option value="dim">Show "Hidden by filter" placeholder</option>
+          </select>
+        </label>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Always-allow domains</h2>
+    <div class="section-hint">Skip all checks (including image/post scanners) for these. One per line. Subdomains included.</div>
+    <textarea id="allowDomains" placeholder="github.com&#10;gmail.com&#10;claude.ai&#10;chase.com"></textarea>
+  </section>
+
+  <section>
+    <h2>If the AI check fails</h2>
+    <select id="failMode">
+      <option value="open">Allow the content (fail-open)</option>
+      <option value="closed">Block the content (fail-closed)</option>
+    </select>
+  </section>
+
+  <div class="actions">
+    <button class="primary" id="save">Save</button>
+    <button class="secondary" id="clearCache">Clear cache</button>
+    <span class="status" id="status"></span>
+  </div>
+
+  <section style="margin-top: 40px;">
+    <h2>Test it</h2>
+    <div class="section-hint">Search query, YouTube URL, or any page URL.</div>
+    <div class="test-panel">
+      <div class="test-row">
+        <input type="text" id="testInput" placeholder="e.g. 'bet on the super bowl', or https://example.com/page">
+        <button class="secondary" id="testBtn">Test</button>
+      </div>
+      <div class="test-result" id="testResult"></div>
+    </div>
+  </section>
+
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

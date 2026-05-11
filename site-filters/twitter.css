@@ -1,0 +1,26 @@
+/* Twitter/X Layer 2: hide tweets marked as sensitive content.
+   Twitter wraps sensitive media in a warning overlay element. */
+
+/* Sensitive media overlay — hide entire tweet, not just the warning */
+article:has([data-testid="sensitive-media-content"]),
+article:has([data-testid="sensitiveMediaWarning"]),
+article:has([aria-label*="sensitive"]),
+article:has([aria-label*="Sensitive"]) {
+  display: none !important;
+}
+
+/* "This Tweet contains sensitive content" wrappers */
+[data-testid="sensitive-media-content"],
+[data-testid="sensitiveMediaWarning"] {
+  display: none !important;
+}
+
+/* Profiles marked as sensitive (when viewing profile pages) */
+[data-testid="sensitiveContentProfileWarning"] ~ * {
+  display: none !important;
+}
+
+/* Hide the "Show" button on sensitive media — we don't want users to bypass */
+[data-testid="confirmSheetConfirm"] {
+  display: none !important;
+}

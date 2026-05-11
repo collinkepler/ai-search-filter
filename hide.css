@@ -1,0 +1,46 @@
+/* Hide body while we're deciding — prevents results from flashing */
+html.aisf-checking body {
+  visibility: hidden !important;
+}
+
+#aisf-overlay {
+  position: fixed;
+  inset: 0;
+  background: #fafafa;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  visibility: visible !important;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+#aisf-overlay .aisf-card {
+  text-align: center;
+  padding: 32px;
+}
+
+#aisf-overlay .aisf-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid #e5e5e5;
+  border-top-color: #333;
+  border-radius: 50%;
+  animation: aisf-spin 0.8s linear infinite;
+  margin: 0 auto 14px;
+}
+
+@keyframes aisf-spin {
+  to { transform: rotate(360deg); }
+}
+
+#aisf-overlay .aisf-text {
+  color: #666;
+  font-size: 13px;
+}
+
+@media (prefers-color-scheme: dark) {
+  #aisf-overlay { background: #1a1a1a; }
+  #aisf-overlay .aisf-spinner { border-color: #333; border-top-color: #ccc; }
+  #aisf-overlay .aisf-text { color: #999; }
+}
