@@ -127,14 +127,103 @@
       cursor: pointer;
       font-family: inherit;
     }
-    button:hover { background: #222; border-color: #444; }
+    button:hover:not(:disabled) { background: #222; border-color: #444; }
+    button:disabled { opacity: 0.55; cursor: default; }
     button.primary {
       background: #e5e5e5;
       color: #0a0a0a;
       border-color: #e5e5e5;
       font-weight: 600;
     }
-    button.primary:hover { background: #fff; }
+    button.primary:hover:not(:disabled) { background: #fff; }
+
+    .appeal-panel {
+      margin-top: 16px;
+      background: #0f0f0f;
+      border: 1px solid #1f1f1f;
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .appeal-panel[hidden] { display: none; }
+    .appeal-panel .info-label { margin-bottom: 10px; }
+    .appeal-panel textarea {
+      width: 100%;
+      min-height: 100px;
+      background: #161616;
+      color: #e5e5e5;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1.5;
+      resize: vertical;
+      box-sizing: border-box;
+    }
+    .appeal-panel textarea:focus { outline: none; border-color: #555; }
+    .appeal-hint {
+      color: #666;
+      font-size: 12px;
+      margin-top: 6px;
+      line-height: 1.45;
+    }
+    .appeal-submit-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .appeal-status {
+      margin-top: 12px;
+      color: #888;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .appeal-status[hidden] { display: none; }
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid #333;
+      border-top-color: #e5e5e5;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .appeal-result {
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-radius: 6px;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .appeal-result[hidden] { display: none; }
+    .appeal-result.overturned {
+      background: #0f1a10;
+      border: 1px solid #1f3a23;
+      border-left: 4px solid #22c55e;
+      color: #d1fae5;
+    }
+    .appeal-result.upheld {
+      background: #1a1010;
+      border: 1px solid #3a1f1f;
+      border-left: 4px solid #ef4444;
+      color: #fecaca;
+    }
+    .appeal-result-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .appeal-result.overturned .appeal-result-label { color: #22c55e; }
+    .appeal-result.upheld .appeal-result-label { color: #ef4444; }
+    .appeal-result-actions {
+      margin-top: 12px;
+      display: flex;
+      gap: 8px;
+    }
   </style>
 </head>
 <body>
@@ -166,78 +255,30 @@
 
     <div class="actions">
       <button class="primary" id="back">Go back</button>
+      <button id="appealBtn">Appeal</button>
       <button id="opts">Edit rules</button>
+    </div>
+
+    <div class="appeal-panel" id="appealPanel" hidden>
+      <div class="info-label">Appeal to Claude Sonnet</div>
+      <textarea id="appealText" placeholder="Explain why this block is wrong (e.g. the page is actually about something different, or there's a specific legitimate reason this rule shouldn't apply here)."></textarea>
+      <div class="appeal-hint">Sonnet reviews appeals strictly — &ldquo;I want to see it&rdquo; or &ldquo;just this once&rdquo; will not pass. Substantive appeals (false positive, scoped exception, classifier error) can.</div>
+      <div class="appeal-submit-row">
+        <button class="primary" id="appealSubmit">Submit appeal</button>
+        <button id="appealCancel">Cancel</button>
+      </div>
+      <div class="appeal-status" id="appealStatus" hidden>
+        <div class="spinner"></div>
+        <div>Sonnet is reviewing your appeal…</div>
+      </div>
+      <div class="appeal-result" id="appealResult" hidden>
+        <div class="appeal-result-label" id="appealResultLabel"></div>
+        <div id="appealResultReason"></div>
+        <div class="appeal-result-actions" id="appealResultActions"></div>
+      </div>
     </div>
   </div>
 
-  <script>
-    const params = new URLSearchParams(location.search);
-
-    // Pull all values (supporting both new 'rule' and old 'category' param names)
-    const q = params.get('q') || '';
-    const rule = params.get('rule') || params.get('category') || '';
-    const reason = params.get('reason') || '';
-    const errorMsg = params.get('error') || '';
-    const fromCache = params.get('fromCache') === '1';
-    const raw = params.get('raw') || '';
-
-    // Subtitle - show error context if there was one
-    if (errorMsg) {
-      document.getElementById('subtitle').textContent =
-        'Blocked due to: ' + errorMsg + ' (you\'re in fail-closed mode).';
-    }
-
-    // Query
-    const qEl = document.getElementById('q');
-    if (q) {
-      qEl.textContent = q;
-    } else {
-      qEl.textContent = '(query info not provided)';
-      qEl.classList.add('missing');
-    }
-
-    // Rule
-    const ruleEl = document.getElementById('rule');
-    if (rule) {
-      ruleEl.textContent = rule;
-    } else {
-      ruleEl.textContent = "(Claude didn't specify which rule matched)";
-      ruleEl.classList.add('missing');
-    }
-
-    // Reason
-    const reasonEl = document.getElementById('reason');
-    if (reason) {
-      reasonEl.textContent = reason;
-    } else {
-      reasonEl.textContent = '(no reason was returned)';
-      reasonEl.classList.add('missing');
-    }
-
-    // Debug
-    const debugData = {
-      query: q || '(empty)',
-      rule: rule || '(empty)',
-      reason: reason || '(empty)',
-      fromCache: fromCache,
-      error: errorMsg || '(none)',
-      rawClaudeResponse: raw || '(not provided)',
-      allUrlParams: Object.fromEntries(params)
-    };
-    document.getElementById('debugPre').textContent = JSON.stringify(debugData, null, 2);
-
-    // Auto-open debug if data is missing
-    if (!rule || !reason) {
-      document.getElementById('debug').open = true;
-    }
-
-    document.getElementById('back').addEventListener('click', () => {
-      if (history.length > 1) history.back();
-      else window.close();
-    });
-    document.getElementById('opts').addEventListener('click', () => {
-      chrome.runtime.openOptionsPage && chrome.runtime.openOptionsPage();
-    });
-  </script>
+  <script src="block.js"></script>
 </body>
 </html>

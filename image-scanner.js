@@ -20,6 +20,7 @@
 
       this.scanned = new WeakSet();
       this.scannedUrls = new Set();
+      this.disabled = false;
       this.start();
     }
 
@@ -34,7 +35,12 @@
       this.mutationObserver = new MutationObserver(this.onMutation.bind(this));
       const root = document.body || document.documentElement;
       if (root) {
-        this.mutationObserver.observe(root, { childList: true, subtree: true });
+        this.mutationObserver.observe(root, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['src', 'srcset', 'poster']
+        });
       }
     }
 
@@ -88,6 +94,17 @@
 
     onMutation(mutations) {
       for (const m of mutations) {
+        if (m.type === 'attributes') {
+          const el = m.target;
+          if (!el || (el.tagName !== 'IMG' && el.tagName !== 'VIDEO')) continue;
+          // Skip elements we've never observed — observe() will pick them up via
+          // the addedNodes branch if/when they enter the DOM.
+          if (!this.scanned.has(el)) continue;
+          const newUrl = el.tagName === 'IMG' ? (el.currentSrc || el.src) : el.poster;
+          if (!newUrl || newUrl.startsWith('data:') || newUrl.startsWith('blob:')) continue;
+          this.reCheck(el);
+          continue;
+        }
         for (const node of m.addedNodes) {
           if (node.nodeType !== 1) continue;
           if (node.tagName === 'IMG' || node.tagName === 'VIDEO') {
@@ -100,7 +117,28 @@
       }
     }
 
+    reCheck(el) {
+      // Reset every dataset flag the prior verdict left behind so applyPendingBlur
+      // and checkElement treat this as a fresh classification round. This also
+      // covers slot-reuse: an <img> that was hidden as NSFW can be repurposed by
+      // Google's virtualized list for a different image, and we want to classify
+      // the new content rather than leave it hidden or unhide it blindly.
+      if (el.dataset.aisfFlagged) {
+        delete el.dataset.aisfFlagged;
+        delete el.dataset.aisfReason;
+        el.style.visibility = '';
+      }
+      delete el.dataset.aisfPending;
+      delete el.dataset.aisfCleared;
+      delete el.dataset.aisfPrevFilter;
+      el.style.filter = '';
+
+      this.applyPendingBlur(el);
+      this.checkElement(el);
+    }
+
     checkElement(el) {
+      if (this.disabled) return;
       // Re-check size now that it may have loaded after observe() ran
       if (this.isTooSmall(el)) {
         this.clearPendingBlur(el);
@@ -138,6 +176,7 @@
         { type: 'classifyImage', imageUrl: url },
         (response) => {
           clearTimeout(timeoutId);
+          if (this.disabled) return;
           if (chrome.runtime.lastError || !response) {
             // Fail-closed: leave blurred. Timeout above will eventually clear it.
             return;
@@ -164,6 +203,17 @@
     stop() {
       if (this.observer) this.observer.disconnect();
       if (this.mutationObserver) this.mutationObserver.disconnect();
+    }
+
+    disable() {
+      // Tear-down for the "intelligent activation" path: a host-level verdict
+      // says this site doesn't need image scanning. Stop observing, clear any
+      // optimistic blurs we already applied, but DO NOT touch elements already
+      // flagged as NSFW — those verdicts are authoritative.
+      this.disabled = true;
+      this.stop();
+      document.querySelectorAll('img[data-aisf-pending], video[data-aisf-pending]')
+        .forEach((el) => this.clearPendingBlur(el));
     }
   }
 

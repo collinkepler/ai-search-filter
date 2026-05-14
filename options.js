@@ -13,17 +13,21 @@ async function load() {
   const stored = await chrome.storage.local.get([
     'apiKey', 'rules', 'blocklist', 'failMode', 'allowDomains',
     'enableSiteFilters', 'enableImageScanner', 'enablePostScanner',
-    'imageMinSize', 'postAction', 'imageScannerExcludeDomains'
+    'imageMinSize', 'postAction', 'imageScannerExcludeDomains', 'personalContext',
+    'personalContextOnHotPaths', 'intelligentImageScanner'
   ]);
 
   $('apiKey').value = stored.apiKey || '';
   $('failMode').value = stored.failMode || 'open';
   $('allowDomains').value = Array.isArray(stored.allowDomains) ? stored.allowDomains.join('\n') : '';
+  $('personalContext').value = stored.personalContext || '';
   $('imageScannerExcludeDomains').value = Array.isArray(stored.imageScannerExcludeDomains) ? stored.imageScannerExcludeDomains.join('\n') : '';
 
   $('enableSiteFilters').checked = stored.enableSiteFilters !== false; // default ON
   $('enableImageScanner').checked = stored.enableImageScanner === true;
   $('enablePostScanner').checked = stored.enablePostScanner === true;
+  $('intelligentImageScanner').checked = stored.intelligentImageScanner !== false; // default ON
+  $('personalContextOnHotPaths').checked = stored.personalContextOnHotPaths !== false; // default ON
 
   $('imageMinSize').value = stored.imageMinSize || 80;
   $('postAction').value = stored.postAction || 'hide';
@@ -59,15 +63,23 @@ function renderRules() {
     row.className = 'rule-row';
     row.dataset.mode = rule.mode;
 
-    const input = document.createElement('input');
-    input.type = 'text';
+    const input = document.createElement('textarea');
+    input.rows = 1;
     input.className = 'rule-text';
     input.value = rule.text;
     input.placeholder =
       rule.mode === 'only-allow' ? 'e.g. Real estate, business, AI, or tech videos' :
       rule.mode === 'allow'      ? 'e.g. Gaming and tech content' :
                                    'e.g. Pornography and sexual content';
-    input.addEventListener('input', (e) => { rules[idx].text = e.target.value; });
+    const autosize = () => {
+      input.style.height = 'auto';
+      input.style.height = input.scrollHeight + 'px';
+    };
+    input.addEventListener('input', (e) => { rules[idx].text = e.target.value; autosize(); });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); }
+    });
+    requestAnimationFrame(autosize);
 
     const toggle = document.createElement('div');
     toggle.className = 'toggle';
@@ -171,8 +183,11 @@ $('save').addEventListener('click', async () => {
     enableSiteFilters: $('enableSiteFilters').checked,
     enableImageScanner: $('enableImageScanner').checked,
     enablePostScanner: $('enablePostScanner').checked,
+    intelligentImageScanner: $('intelligentImageScanner').checked,
     imageMinSize: Math.max(50, Math.min(500, parseInt($('imageMinSize').value, 10) || 80)),
-    postAction: $('postAction').value
+    postAction: $('postAction').value,
+    personalContext: $('personalContext').value.trim(),
+    personalContextOnHotPaths: $('personalContextOnHotPaths').checked
   });
   await chrome.storage.local.remove('aisf-cache');
   rules = clean;
@@ -183,7 +198,7 @@ $('save').addEventListener('click', async () => {
 });
 
 $('clearCache').addEventListener('click', async () => {
-  await chrome.storage.local.remove(['aisf-cache', 'aisf-img-cache']);
+  await chrome.storage.local.remove(['aisf-cache', 'aisf-img-cache', 'aisf-host-skip-cache']);
   showStatus('Caches cleared.', 'ok');
 });
 

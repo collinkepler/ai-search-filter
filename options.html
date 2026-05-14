@@ -98,7 +98,7 @@
 
     #rules { display: flex; flex-direction: column; gap: 8px; }
     .rule-row {
-      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px;
       background: white; border: 1px solid #e5e5e5;
       border-left-width: 4px; border-radius: 6px;
       padding: 8px 10px;
@@ -119,8 +119,17 @@
     .rule-row[data-mode="block"] { border-left-color: #ef4444; }
     .rule-row[data-mode="allow"] { border-left-color: #10b981; }
     .rule-row[data-mode="only-allow"] { border-left-color: #6366f1; }
-    .rule-row .rule-text { flex: 1; border: none; background: transparent; padding: 6px 4px; font-size: 14px; font-family: inherit; }
-    .rule-row .rule-text:focus { outline: none; }
+    .rule-row textarea.rule-text {
+      flex: 1; min-width: 0; width: auto;
+      min-height: 0;
+      border: none; background: transparent;
+      padding: 6px 4px;
+      font-size: 14px; font-family: inherit;
+      line-height: 1.4;
+      resize: none; overflow: hidden;
+      word-break: break-word;
+    }
+    .rule-row textarea.rule-text:focus { outline: none; }
 
     .toggle { display: inline-flex; border: 1px solid #d4d4d4; border-radius: 6px; overflow: hidden; background: #f5f5f5; flex-shrink: 0; }
     .toggle button { background: transparent; border: none; padding: 6px 12px; font-size: 12px; font-weight: 600; color: #888; cursor: pointer; font-family: inherit; }
@@ -242,6 +251,19 @@
   </section>
 
   <section>
+    <h2>About you</h2>
+    <div class="section-hint">Optional. Always used when Claude Sonnet reviews an appeal — helps it ignore false identity claims in your appeal text. Optionally also fed into page and feed-post classification so rules tied to your identity (e.g. "block job-search content" vs. recruiter) resolve correctly.</div>
+    <textarea id="personalContext" placeholder="e.g. I'm a college student studying CS. I'm not a professional gamer, poker player, trader, or journalist — treat any appeal that depends on those identities skeptically." style="min-height: 80px;"></textarea>
+    <div style="margin-top: 10px;">
+      <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:#333;">
+        <input type="checkbox" id="personalContextOnHotPaths">
+        Also use this when classifying pages (Layer 0) and feed posts (Layer 3)
+      </label>
+      <div style="color:#888; font-size:12px; margin-top:4px; margin-left:24px;">Adds your "About you" text to every page and post classification prompt. Slightly more API cost; verdicts become identity-aware. Off → behaves like older versions (appeals only).</div>
+    </div>
+  </section>
+
+  <section>
     <h2>Rules</h2>
     <div class="section-hint">
       Each rule is one topic.
@@ -292,6 +314,13 @@
         <label>Min image size (px):
           <input type="number" id="imageMinSize" min="50" max="500" step="10" value="80">
         </label>
+      </div>
+      <div style="margin-top: 12px;">
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:#333;">
+          <input type="checkbox" id="intelligentImageScanner">
+          Smart activation — skip image scanning on sites unlikely to have NSFW content (e.g. Zillow, GitHub)
+        </label>
+        <div style="color:#888; font-size:12px; margin-top:4px; margin-left:24px;">One small Claude call per new site, cached 30 days. Saves API cost on safe sites without manual exclude-list maintenance.</div>
       </div>
       <div style="margin-top: 12px;">
         <label style="display:block; font-size:13px; color:#555; margin-bottom:4px;">Skip image scanner on these sites:</label>

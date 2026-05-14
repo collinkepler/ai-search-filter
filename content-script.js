@@ -70,6 +70,7 @@
       if (response.blocked) {
         const params = new URLSearchParams();
         params.set('q', describe(content));
+        params.set('originalUrl', urlAtStart);
         if (response.matchedRule) params.set('rule', response.matchedRule);
         if (response.reason) params.set('reason', response.reason);
         if (response.error) params.set('error', response.error);
@@ -93,7 +94,7 @@
       });
     }, 10000);
 
-    chrome.runtime.sendMessage({ type: 'check', content }, finish);
+    chrome.runtime.sendMessage({ type: 'check', content, navigationUrl: urlAtStart }, finish);
   }
 
   function initSubLayers(settings) {
@@ -101,9 +102,27 @@
     const imageExcluded = isAllowedDomain(location.hostname, settings.imageScannerExcludeDomains);
     if (settings.enableImageScanner && !imageExcluded && typeof window.AISFImageScanner !== 'undefined') {
       if (!window.__aisfImageScanner) {
-        window.__aisfImageScanner = new window.AISFImageScanner({
+        const scanner = new window.AISFImageScanner({
           minSize: settings.imageMinSize || 80
         });
+        window.__aisfImageScanner = scanner;
+
+        // Smart activation: ask the service worker once whether this host is
+        // even a candidate for NSFW imagery. If not, tear down the scanner.
+        // Default true; existing users who never set the key get smart skipping.
+        if (settings.intelligentImageScanner !== false) {
+          chrome.runtime.sendMessage(
+            { type: 'classifyHostForImageScanner', hostname: location.hostname },
+            (resp) => {
+              if (chrome.runtime.lastError || !resp) return; // fail-open
+              if (resp.skip) {
+                console.log('[AISF] image scanner skipped for', location.hostname, '—', resp.reason || '(no reason)');
+                scanner.disable();
+                window.__aisfImageScanner = null;
+              }
+            }
+          );
+        }
       }
     }
 
@@ -126,7 +145,8 @@
       'imageMinSize',
       'postAction',
       'failMode',
-      'imageScannerExcludeDomains'
+      'imageScannerExcludeDomains',
+      'intelligentImageScanner'
     ]);
     return settingsCache;
   }
@@ -143,30 +163,43 @@
     return false;
   }
 
+  const SEARCH_PARAMS_STRONG = ['search_query', 'query', 'q', 'k', 'keyword', 'keywords', '_nkw', 'searchTerm'];
+  const SEARCH_PARAMS_WEAK = ['search', 'term', 'wd', 'text', 's'];
+  const SEARCH_PATH_RE = /\/(search|results|find|explore|browse|sch)(\/|$|\.)/i;
+
+  function detectSearchQuery(host, path, params) {
+    const pick = (names) => {
+      for (const n of names) {
+        const v = params.get(n);
+        if (v && v.trim().length >= 2) return v.trim();
+      }
+      return null;
+    };
+    const q = pick(SEARCH_PARAMS_STRONG) || (SEARCH_PATH_RE.test(path) ? pick(SEARCH_PARAMS_WEAK) : null);
+    if (!q) return null;
+    let engine = host;
+    if (host === 'duckduckgo.com') engine = 'duckduckgo';
+    return { type: 'search', engine, query: q, hostname: host };
+  }
+
   async function extractContent() {
     const host = location.hostname;
     const path = location.pathname;
     const params = new URLSearchParams(location.search);
-
-    if ((host === 'www.google.com' && path === '/search') ||
-        (host === 'www.bing.com' && path === '/search')) {
-      const q = params.get('q');
-      return q && q.trim() ? { type: 'search', engine: host, query: q.trim(), hostname: host } : null;
-    }
-    if (host === 'duckduckgo.com') {
-      const q = params.get('q');
-      return q && q.trim() ? { type: 'search', engine: 'duckduckgo', query: q.trim(), hostname: host } : null;
-    }
 
     if (host === 'www.youtube.com' && path === '/watch') {
       const v = params.get('v');
       return v ? { type: 'youtube_video', videoId: v, url: location.href, hostname: host } : null;
     }
 
-    // YouTube container pages (homepage, search results, channels, shorts feed, etc.)
-    // have no specific content to classify at the URL level — Layer 3 filters
-    // individual video cards as they scroll into view. Returning null here skips
-    // Layer 0 so the site itself isn't blocked.
+    const search = detectSearchQuery(host, path, params);
+    if (search) return search;
+
+    // YouTube container pages (homepage, channels, shorts feed, /feed/*) have no
+    // specific content to classify at the URL level — Layer 3 filters individual
+    // video cards as they scroll into view. Returning null here skips Layer 0 so
+    // the site itself isn't blocked. Search results are caught above by
+    // detectSearchQuery via the search_query param.
     if (host === 'www.youtube.com' || host === 'm.youtube.com') {
       return null;
     }
