@@ -5,7 +5,7 @@
 
 const CACHE_KEY = 'aisf-cache';
 const CACHE_VERSION_KEY = 'aisf-cache-version';
-const CACHE_VERSION = 5; // bump when callClaudeForContext / callClaudeForPosts prompt changes meaningfully
+const CACHE_VERSION = 6; // bump when callClaudeForContext / callClaudeForPosts prompt changes meaningfully
 const IMG_CACHE_KEY = 'aisf-img-cache';
 const IMG_CACHE_VERSION_KEY = 'aisf-img-cache-version';
 const IMG_CACHE_VERSION = 2; // bump when callClaudeForImage prompt changes meaningfully
@@ -77,6 +77,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === 'appealRuleChange') {
+    handleRuleChangeAppeal(msg).then(sendResponse).catch((err) => {
+      console.error('[AISF] rule-change appeal threw:', err);
+      sendResponse({ approved: false, reason: 'Appeal failed: ' + String(err && err.message || err), error: String(err) });
+    });
+    return true;
+  }
+
   if (msg.type === 'classifyImage') {
     classifyImage(msg.imageUrl).then(sendResponse).catch((err) => {
       console.error('[AISF] classifyImage threw:', err);
@@ -117,11 +125,12 @@ async function checkContent(content, navigationUrl) {
     return { blocked: false, reason: 'appeal-granted' };
   }
 
-  const stored = await chrome.storage.local.get(['apiKey', 'rules', 'blocklist', 'failMode', 'personalContext', 'personalContextOnHotPaths']);
+  const stored = await chrome.storage.local.get(['apiKey', 'rules', 'blocklist', 'failMode', 'personalContext', 'personalContextOnHotPaths', 'contentStrictness']);
   const apiKey = stored.apiKey || '';
   const failMode = stored.failMode || 'open';
   const useOnHotPaths = stored.personalContextOnHotPaths !== false; // default ON
   const personalContext = useOnHotPaths ? (stored.personalContext || '').trim() : '';
+  const contentStrictness = stored.contentStrictness || 'balanced';
 
   let rules = Array.isArray(stored.rules) ? stored.rules : null;
   if (!rules && typeof stored.blocklist === 'string' && stored.blocklist.trim()) {
@@ -157,6 +166,7 @@ async function checkContent(content, navigationUrl) {
   };
   if (onlyAllowRules.length) hashSource.oa = onlyAllowRules.map(ruleForHash);
   if (personalContext) hashSource.pc = hashStr(personalContext);
+  if (contentStrictness && contentStrictness !== 'balanced') hashSource.cs = contentStrictness;
   const rulesHash = hashStr(JSON.stringify(hashSource));
   const cacheKey = `${cacheId}::${rulesHash}`;
 
@@ -164,7 +174,7 @@ async function checkContent(content, navigationUrl) {
   if (cached) return { ...cached, fromCache: true };
 
   try {
-    const decision = await callClaudeForContext(context, blockRules, allowRules, onlyAllowRules, apiKey, personalContext);
+    const decision = await callClaudeForContext(context, blockRules, allowRules, onlyAllowRules, apiKey, personalContext, contentStrictness);
     await setCached(CACHE_KEY, cacheKey, decision, MAX_CACHE_ENTRIES);
     return decision;
   } catch (e) {
@@ -218,7 +228,7 @@ async function fetchYouTubeMeta(videoId) {
   } catch (e) { return null; }
 }
 
-async function callClaudeForContext(context, blockRules, allowRules, onlyAllowRules, apiKey, personalContext) {
+async function callClaudeForContext(context, blockRules, allowRules, onlyAllowRules, apiKey, personalContext, contentStrictness) {
   const blockListText = blockRules.length
     ? blockRules.map((r, i) => `${i + 1}. ${r.text}`).join('\n')
     : '(none)';
@@ -230,9 +240,11 @@ async function callClaudeForContext(context, blockRules, allowRules, onlyAllowRu
     : '(none)';
 
   const contextBlock = buildPersonalContextBlock(personalContext);
+  const strictnessDirective = buildStrictnessDirective(contentStrictness, 'content');
 
   const systemPrompt = onlyAllowRules.length > 0 ? [
     contextBlock,
+    strictnessDirective,
     'You classify web content against the user\'s rules.',
     '',
     'The user is in ALLOWLIST mode: by default, content is BLOCKED unless it clearly matches at least one ONLY-ALLOW rule.',
@@ -263,6 +275,7 @@ async function callClaudeForContext(context, blockRules, allowRules, onlyAllowRu
     '{"blocked": true|false, "matchedRule": "exact rule text or null", "reason": "1-2 sentence substantive explanation, required"}'
   ].join('\n') : [
     contextBlock,
+    strictnessDirective,
     'You classify web content against the user\'s rules.',
     '',
     'BLOCK rules:',
@@ -437,7 +450,7 @@ async function callClaudeForHostSkip(hostname, apiKey) {
 async function classifyPosts(posts, hostname) {
   if (!Array.isArray(posts) || posts.length === 0) return { verdicts: [] };
 
-  const stored = await chrome.storage.local.get(['apiKey', 'rules', 'enablePostScanner', 'personalContext', 'personalContextOnHotPaths']);
+  const stored = await chrome.storage.local.get(['apiKey', 'rules', 'enablePostScanner', 'personalContext', 'personalContextOnHotPaths', 'contentStrictness']);
   if (!stored.apiKey || !stored.enablePostScanner) return { verdicts: [] };
 
   const host = (hostname || '').toLowerCase();
@@ -448,9 +461,10 @@ async function classifyPosts(posts, hostname) {
 
   const useOnHotPaths = stored.personalContextOnHotPaths !== false; // default ON
   const personalContext = useOnHotPaths ? (stored.personalContext || '').trim() : '';
+  const contentStrictness = stored.contentStrictness || 'balanced';
 
   try {
-    const verdicts = await callClaudeForPosts(posts, blockRules, allowRules, onlyAllowRules, stored.apiKey, personalContext);
+    const verdicts = await callClaudeForPosts(posts, blockRules, allowRules, onlyAllowRules, stored.apiKey, personalContext, contentStrictness);
     return { verdicts };
   } catch (e) {
     console.error('[AISF] classifyPosts failed:', e);
@@ -458,7 +472,7 @@ async function classifyPosts(posts, hostname) {
   }
 }
 
-async function callClaudeForPosts(posts, blockRules, allowRules, onlyAllowRules, apiKey, personalContext) {
+async function callClaudeForPosts(posts, blockRules, allowRules, onlyAllowRules, apiKey, personalContext, contentStrictness) {
   const blockListText = blockRules.length
     ? blockRules.map((r, i) => `${i + 1}. ${r.text}`).join('\n')
     : '(none)';
@@ -470,9 +484,11 @@ async function callClaudeForPosts(posts, blockRules, allowRules, onlyAllowRules,
     : '(none)';
 
   const contextBlock = buildPersonalContextBlock(personalContext);
+  const strictnessDirective = buildStrictnessDirective(contentStrictness, 'content');
 
   const systemPrompt = onlyAllowRules.length > 0 ? [
     contextBlock,
+    strictnessDirective,
     'You classify a list of social media / feed posts against the user\'s rules.',
     '',
     'The user is in ALLOWLIST mode: by default, each post is BLOCKED unless it clearly matches at least one ONLY-ALLOW rule.',
@@ -498,6 +514,7 @@ async function callClaudeForPosts(posts, blockRules, allowRules, onlyAllowRules,
     '[{"id": <post id>, "blocked": true|false, "matchedRule": "rule text or null", "reason": "brief one-line reason"}, ...]'
   ].join('\n') : [
     contextBlock,
+    strictnessDirective,
     'You classify a list of social media / feed posts against the user\'s rules.',
     '',
     'BLOCK rules:',
@@ -553,7 +570,7 @@ async function handleAppeal({ originalUrl, query, matchedRule, originalReason, a
     return { overturned: false, reason: 'Missing original URL — cannot process appeal.' };
   }
 
-  const { apiKey = '', personalContext = '' } = await chrome.storage.local.get(['apiKey', 'personalContext']);
+  const { apiKey = '', personalContext = '', appealStrictness = 'strict' } = await chrome.storage.local.get(['apiKey', 'personalContext', 'appealStrictness']);
   if (!apiKey) {
     return { overturned: false, reason: 'No API key configured.' };
   }
@@ -567,7 +584,8 @@ async function handleAppeal({ originalUrl, query, matchedRule, originalReason, a
       matchedRule: matchedRule || '',
       originalReason: originalReason || '',
       appealText: appeal,
-      personalContext: (personalContext || '').trim()
+      personalContext: (personalContext || '').trim(),
+      appealStrictness
     });
   } catch (e) {
     console.error('[AISF] appeal call failed:', e);
@@ -580,9 +598,12 @@ async function handleAppeal({ originalUrl, query, matchedRule, originalReason, a
   return decision;
 }
 
-async function callClaudeForAppeal({ apiKey, originalUrl, query, matchedRule, originalReason, appealText, personalContext }) {
+async function callClaudeForAppeal({ apiKey, originalUrl, query, matchedRule, originalReason, appealText, personalContext, appealStrictness }) {
   const hasContext = !!(personalContext && personalContext.trim());
+  const strictnessDirective = buildStrictnessDirective(appealStrictness, 'appeal');
   const systemPrompt = [
+    strictnessDirective ? strictnessDirective.trimEnd() : null,
+    strictnessDirective ? '' : null,
     'You review appeals against a self-imposed content filter. The user previously set rules to block certain content for THEMSELVES, as a precommitment against their own weaker moments. A page was just blocked and the user is now appealing.',
     '',
     'Your job is to decide whether the appeal is genuinely valid. Be STRICT but REASONABLE. You are not here to be agreeable — you are here to enforce the user\'s own better judgment against their in-the-moment urges.',
@@ -641,6 +662,149 @@ async function callClaudeForAppeal({ apiKey, originalUrl, query, matchedRule, or
 
   const reason = (typeof parsed.reason === 'string' && parsed.reason.trim()) ? parsed.reason.trim() : 'No reason given.';
   return { overturned: Boolean(parsed.overturned), reason, rawResponse: rawText };
+}
+
+// ============================================================
+// Rule-change appeals (Sonnet reviews settings edits that weaken the filter)
+// ============================================================
+
+async function handleRuleChangeAppeal({ diff, appealText }) {
+  const appeal = (appealText || '').trim();
+  if (!appeal) {
+    return { approved: false, reason: 'Write something in the appeal box explaining why you want to weaken your filter.' };
+  }
+  const renderedDiff = renderDiffForPrompt(diff);
+  if (!renderedDiff) {
+    return { approved: false, reason: 'No changes detected to review.' };
+  }
+
+  const { apiKey = '', personalContext = '' } = await chrome.storage.local.get(['apiKey', 'personalContext']);
+  if (!apiKey) {
+    return { approved: false, reason: 'No API key configured.' };
+  }
+
+  try {
+    return await callClaudeForRuleChangeAppeal({
+      apiKey,
+      renderedDiff,
+      appealText: appeal,
+      personalContext: (personalContext || '').trim()
+    });
+  } catch (e) {
+    console.error('[AISF] rule-change appeal call failed:', e);
+    return { approved: false, reason: 'Appeal review failed: ' + String(e && e.message || e), error: String(e) };
+  }
+}
+
+async function callClaudeForRuleChangeAppeal({ apiKey, renderedDiff, appealText, personalContext }) {
+  const hasContext = !!(personalContext && personalContext.trim());
+  const systemPrompt = [
+    'You review proposals to weaken a self-imposed content filter. The user set rules in advance to block certain content for THEMSELVES, as a precommitment against their own weaker moments. They are now proposing edits that would make the filter LESS restrictive — fewer block rules, broader allow rules, disabled scanners, expanded skip-lists, or a changed "ABOUT THE USER" identity blurb.',
+    '',
+    'Your job is to decide whether the appeal substantively justifies the proposed weakening. Be STRICT but REASONABLE. You are not here to be agreeable — you are here to enforce the user\'s own better judgment against their in-the-moment urges.',
+    '',
+    'APPROVE the change (approved=true) ONLY if the appeal substantively raises one of:',
+    '- A specific, concrete real-life need with a stated reason (work project, research deadline, parenting situation, medical context) that the rule clearly was not aimed at',
+    '- A genuine fix to a poorly-worded rule that has been generating obvious false positives the user can describe — not a generic complaint that "the filter is too strict"',
+    '- A legitimate scoped exception that fits the SPIRIT of the rule (e.g. narrowing a global block to specific sites the user has a job/research reason to access)',
+    '- An identity-blurb update that reflects a real change in the user\'s life, described concretely, not invented to spoof future appeals',
+    '',
+    'DENY the change (approved=false) when:',
+    '- The appeal is "I want to look at it", "just this once", "I changed my mind", "the rule is too strict", or vague frustration without substance',
+    '- The appeal admits the content IS what the rule was meant to block, and just asks for relief',
+    '- The appeal is empty, one word, or does not address WHY the weakening is necessary',
+    '- The user appears to be in a moment of weakness, trying to dismantle their own precommitment',
+    hasContext ? '- The appeal relies on an identity, profession, or life-circumstance claim that conflicts with the "ABOUT THE USER" block below. Do not accept unverifiable identity claims that the user\'s stated identity does not support.' : null,
+    '- The proposed edit changes the "ABOUT THE USER" blurb itself in a way that conveniently unlocks future appeals (e.g. adding "I\'m a journalist researching X") without a concrete, verifiable reason',
+    '- You are not clearly persuaded — DEFAULT is to DENY',
+    '',
+    hasContext ? 'You will be given an "ABOUT THE USER" block describing who the user actually is — they wrote it in advance, in a calm moment, as ground truth. Treat it as authoritative. If the appeal contradicts it, default to DENY. The user wrote the about-you block specifically to stop themselves from spoofing you in the heat of the moment.' : null,
+    hasContext ? '' : null,
+    'Respond with ONLY valid JSON, no fences or prose:',
+    '{"approved": true|false, "reason": "1-2 sentences addressed directly to the user explaining your decision"}'
+  ].filter((l) => l !== null).join('\n');
+
+  const userContent = [
+    hasContext ? 'ABOUT THE USER (the user wrote this themselves, in advance, as ground truth):' : null,
+    hasContext ? personalContext.trim() : null,
+    hasContext ? '' : null,
+    'PROPOSED CHANGES TO THE FILTER (each bullet weakens or is unclassified):',
+    renderedDiff,
+    '',
+    'THE USER\'S JUSTIFICATION:',
+    appealText
+  ].filter((l) => l !== null).join('\n');
+
+  const data = await callAnthropic({
+    apiKey,
+    model: APPEAL_MODEL,
+    system: systemPrompt,
+    messages: [{ role: 'user', content: userContent }],
+    max_tokens: 400,
+    timeoutMs: 20000
+  });
+
+  const textBlock = (data.content || []).find((b) => b.type === 'text');
+  if (!textBlock) throw new Error('No text block in appeal response');
+  const rawText = textBlock.text.trim();
+  const cleaned = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  const parsed = JSON.parse(cleaned);
+
+  const reason = (typeof parsed.reason === 'string' && parsed.reason.trim()) ? parsed.reason.trim() : 'No reason given.';
+  return { approved: Boolean(parsed.approved), reason, rawResponse: rawText };
+}
+
+function renderDiffForPrompt(diff) {
+  if (!diff || typeof diff !== 'object') return '';
+  const bullets = [];
+
+  const rules = diff.rules || {};
+  for (const r of (rules.added || [])) {
+    const disabledNote = (r.enabled === false) ? ', DISABLED' : '';
+    bullets.push(`- ADD rule (${r.mode}${ruleScopeText(r)}${disabledNote}): "${truncate(r.text, 200)}"`);
+  }
+  for (const r of (rules.removed || [])) {
+    const disabledNote = (r.enabled === false) ? ', was DISABLED' : '';
+    bullets.push(`- REMOVE rule (${r.mode}${ruleScopeText(r)}${disabledNote}): "${truncate(r.text, 200)}"`);
+  }
+  for (const m of (rules.modified || [])) {
+    const parts = [];
+    if (m.textChanged) parts.push(`text: "${truncate(m.oldText, 120)}" -> "${truncate(m.newText, 120)}"`);
+    if (m.modeChanged) parts.push(`mode: ${m.oldMode} -> ${m.newMode}`);
+    if (m.scopeChanged) parts.push(`scope: [${(m.oldScope || []).join(', ') || 'all sites'}] -> [${(m.newScope || []).join(', ') || 'all sites'}]`);
+    if (m.enabledChanged) parts.push(m.newEnabled ? 'ENABLED' : 'DISABLED (rule will no longer be enforced)');
+    bullets.push(`- EDIT rule "${truncate(m.newText || m.oldText, 120)}": ${parts.join('; ')}`);
+  }
+
+  const settings = diff.settings || {};
+  for (const key of Object.keys(settings)) {
+    const { old: o, new: n } = settings[key];
+    bullets.push(`- CHANGE ${key}: ${formatSettingValue(o)} -> ${formatSettingValue(n)}`);
+  }
+
+  if (diff.personalContext) {
+    const oldPc = diff.personalContext.old || '';
+    const newPc = diff.personalContext.new || '';
+    bullets.push(`- EDIT "ABOUT THE USER" blurb:\n    BEFORE: ${truncate(oldPc, 400) || '(empty)'}\n    AFTER:  ${truncate(newPc, 400) || '(empty)'}`);
+  }
+
+  return bullets.join('\n');
+}
+
+function ruleScopeText(r) {
+  if (Array.isArray(r.scope) && r.scope.length) return `, scope=[${r.scope.join(', ')}]`;
+  return '';
+}
+
+function formatSettingValue(v) {
+  if (Array.isArray(v)) return v.length ? `[${v.join(', ')}]` : '[empty]';
+  if (v === '' || v == null) return '(empty)';
+  return String(v);
+}
+
+function truncate(s, n) {
+  s = String(s || '');
+  return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
 async function hasAppealGrant(navigationUrl) {
@@ -751,6 +915,27 @@ function hashStr(s) {
   return h.toString(36);
 }
 
+const CONTENT_STRICTNESS_DIRECTIVES = {
+  'very-lenient': 'STRICTNESS: very lenient. Strongly favor allowing content. Block only when content unambiguously matches a block rule; in any uncertain case, allow it. In ALLOWLIST mode, allow content that plausibly relates to any only-allow rule.',
+  'lenient':      'STRICTNESS: lenient. Lean toward allowing content. When evidence is mixed, allow rather than block. In ALLOWLIST mode, give the benefit of the doubt to content that arguably fits an only-allow rule.',
+  'strict':       'STRICTNESS: strict. Lean toward blocking. When a block rule plausibly applies, block. In ALLOWLIST mode, require a clear fit with an only-allow rule before allowing.',
+  'very-strict':  'STRICTNESS: very strict. Strongly favor blocking. Block on any reasonable match to a block rule, even when uncertain. In ALLOWLIST mode, allow only content that clearly and primarily matches an only-allow rule.'
+};
+
+const APPEAL_STRICTNESS_DIRECTIVES = {
+  'very-lenient': 'APPEAL STRICTNESS: very lenient. Overturn the block whenever the appeal is at all credible. Resolve doubt in favor of the user.',
+  'lenient':      'APPEAL STRICTNESS: lenient. Favor overturning. A plausible reason from the user should usually be enough.',
+  'strict':       'APPEAL STRICTNESS: strict. Default to upholding. Overturn only when the appeal clearly demonstrates a false positive or a legitimate scoped exception.',
+  'very-strict':  'APPEAL STRICTNESS: very strict. Overturn only on obvious classifier errors. Treat all other appeals as the precommitted-self circumventing itself.'
+};
+
+function buildStrictnessDirective(tier, kind) {
+  if (!tier || tier === 'balanced') return '';
+  const map = kind === 'appeal' ? APPEAL_STRICTNESS_DIRECTIVES : CONTENT_STRICTNESS_DIRECTIVES;
+  const text = map[tier];
+  return text ? text + '\n' : '';
+}
+
 function buildPersonalContextBlock(personalContext) {
   const raw = (personalContext || '').trim();
   if (!raw) return '';
@@ -772,7 +957,7 @@ function rand() {
 
 function splitRulesByMode(rules) {
   const list = Array.isArray(rules) ? rules : [];
-  const valid = (r) => r && r.text && r.text.trim();
+  const valid = (r) => r && r.text && r.text.trim() && r.enabled !== false;
   return {
     blockRules:     list.filter((r) => r.mode === 'block'      && valid(r)),
     allowRules:     list.filter((r) => r.mode === 'allow'      && valid(r)),
@@ -796,6 +981,9 @@ function ruleAppliesToHost(rule, host) {
   return rule.scope.some((s) => {
     const norm = String(s || '').toLowerCase().trim();
     if (!norm) return false;
-    return h === norm || h.endsWith('.' + norm);
+    if (h === norm || h.endsWith('.' + norm)) return true;
+    // Bare-word entry (e.g. "youtube"): match if any host label equals it.
+    if (!norm.includes('.')) return h.split('.').includes(norm);
+    return false;
   });
 }

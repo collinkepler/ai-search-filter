@@ -76,3 +76,9 @@ All settings live in `chrome.storage.local`. Keys are accessed by string; there 
 - Layer 1 only scans images that enter the viewport — by design, to avoid wasted API calls. Lazy-loaded NSFW images can flash briefly on fast scroll; the blur transition is what makes this acceptable.
 - The API key sits in `chrome.storage.local` in plaintext. This is documented as personal-use only in [README.md](README.md).
 - `image-scanner.js` sends image **URLs** to the service worker, and Claude fetches them server-side — we don't proxy bytes. Images behind auth won't classify.
+
+## gstack
+
+Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
+
+Available gstack skills: `/office-hours`, `/plan-ceo-review`, `/plan-eng-review`, `/plan-design-review`, `/design-consultation`, `/design-shotgun`, `/design-html`, `/review`, `/ship`, `/land-and-deploy`, `/canary`, `/benchmark`, `/browse`, `/connect-chrome`, `/qa`, `/qa-only`, `/design-review`, `/setup-browser-cookies`, `/setup-deploy`, `/setup-gbrain`, `/retro`, `/investigate`, `/document-release`, `/document-generate`, `/codex`, `/cso`, `/autoplan`, `/plan-devex-review`, `/devex-review`, `/careful`, `/freeze`, `/guard`, `/unfreeze`, `/gstack-upgrade`, `/learn`.

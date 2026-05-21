@@ -46,6 +46,7 @@
       font-size: 13px;
       font-family: inherit;
       background: white;
+      width: auto;
     }
 
     /* Switch */
@@ -66,6 +67,7 @@
     }
     .switch input:checked + .slider { background-color: #10b981; }
     .switch input:checked + .slider:before { transform: translateX(20px); }
+    .switch input:disabled + .slider { cursor: not-allowed; opacity: 0.55; }
 
     .warning {
       background: #fef3c7;
@@ -78,6 +80,20 @@
       line-height: 1.5;
     }
     .warning strong { color: #92400e; }
+
+    /* Appeal-mode banner (shown when editing without a password) */
+    .appeal-mode-banner {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 6px;
+      padding: 12px 14px;
+      margin-bottom: 24px;
+      font-size: 13px;
+      color: #1e3a5f;
+      line-height: 1.5;
+    }
+    .appeal-mode-banner strong { color: #1e40af; }
+    .appeal-mode-banner[hidden] { display: none; }
 
     input[type=password], input[type=text], textarea, select {
       width: 100%;
@@ -103,22 +119,11 @@
       border-left-width: 4px; border-radius: 6px;
       padding: 8px 10px;
     }
-    .rule-scope-row {
-      flex-basis: 100%;
-      display: flex; align-items: center; gap: 8px;
-      padding-top: 6px; margin-top: 6px;
-      border-top: 1px dashed #eee;
-    }
-    .rule-scope-row label { font-size: 11px; color: #888; white-space: nowrap; }
-    .rule-scope-row input {
-      flex: 1; border: 1px solid #e5e5e5; background: #fafafa;
-      padding: 4px 8px; border-radius: 4px;
-      font-size: 12px; font-family: inherit;
-    }
-    .rule-scope-row input:focus { outline: none; border-color: #888; background: white; }
     .rule-row[data-mode="block"] { border-left-color: #ef4444; }
     .rule-row[data-mode="allow"] { border-left-color: #10b981; }
     .rule-row[data-mode="only-allow"] { border-left-color: #6366f1; }
+    .rule-row.disabled { opacity: 0.55; border-left-color: #d4d4d4; }
+    .rule-row.disabled .rule-text { text-decoration: line-through; text-decoration-color: #bbb; }
     .rule-row textarea.rule-text {
       flex: 1; min-width: 0; width: auto;
       min-height: 0;
@@ -130,6 +135,84 @@
       word-break: break-word;
     }
     .rule-row textarea.rule-text:focus { outline: none; }
+
+    /* Per-rule enable/disable switch (compact variant) */
+    .rule-enabled-switch { align-self: center; margin-top: 4px; }
+    .rule-enabled-switch.switch { width: 34px; height: 20px; }
+    .rule-enabled-switch.switch input:checked + .slider:before { transform: translateX(14px); }
+
+    /* Scope chip + collapsible editor */
+    .rule-scope-chip-row {
+      flex-basis: 100%;
+      padding-top: 6px; margin-top: 6px;
+      border-top: 1px dashed #eee;
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .rule-scope-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 11px; letter-spacing: 0.03em;
+      padding: 3px 10px; border-radius: 999px;
+      cursor: pointer; user-select: none;
+      border: 1px solid #d4d4d4; background: #f5f5f5; color: #666;
+      transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    }
+    .rule-scope-chip:hover { background: #eee; border-color: #aaa; color: #1a1a1a; }
+    .rule-scope-chip[data-state="scoped"] {
+      background: #eef2ff; border-color: #6366f1; color: #1a1a1a;
+    }
+    .rule-scope-chip[data-state="scoped"]::before { content: "◆"; font-size: 8px; color: #6366f1; }
+    .rule-scope-chip[data-state="universal"]::before { content: "●"; font-size: 7px; color: #bbb; }
+    .rule-scope-chip .caret { font-size: 9px; margin-left: 2px; opacity: 0.6; }
+    .rule-scope-chip .sg-host {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 11px; color: #1a1a1a; letter-spacing: 0;
+    }
+
+    .rule-scope-editor { flex-basis: 100%; margin-top: 6px; }
+    .rule-scope-editor[hidden] { display: none; }
+    .rule-scope-editor input[type=text] {
+      width: 100%; box-sizing: border-box;
+      border: 1px solid #e5e5e5; background: #fafafa;
+      padding: 5px 8px; border-radius: 4px;
+      font-size: 12px; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    }
+    .rule-scope-editor input[type=text]:focus { outline: none; border-color: #888; background: white; }
+    .rule-scope-editor .scope-help { font-size: 11px; color: #888; margin-top: 4px; }
+
+    /* Inline scope suggestion strip */
+    .rule-scope-suggestion-container { flex-basis: 100%; }
+    .rule-scope-suggestion {
+      margin-top: 4px;
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+      font-size: 11px; color: #888;
+    }
+    .rule-scope-suggestion .sg-host {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      background: #f0f0f0; border: 1px solid #e0e0e0; border-radius: 3px;
+      padding: 1px 5px; color: #1a1a1a;
+    }
+    .rule-scope-suggestion .sg-add {
+      background: #1a1a1a; border: 1px solid #1a1a1a; color: white;
+      border-radius: 3px; padding: 2px 8px; font-size: 11px; cursor: pointer;
+    }
+    .rule-scope-suggestion .sg-add:hover { background: #333; }
+    .rule-scope-suggestion .sg-dismiss {
+      background: transparent; border: none; color: #aaa;
+      cursor: pointer; font-size: 14px; padding: 0 4px; line-height: 1;
+    }
+    .rule-scope-suggestion .sg-dismiss:hover { color: #991b1b; }
+
+    /* Scope summary banner above rules list */
+    .scope-summary {
+      background: #f5f5f5; color: #555;
+      border: 1px solid #e5e5e5;
+      border-radius: 6px;
+      padding: 8px 12px; margin-bottom: 10px;
+      font-size: 12px; line-height: 1.5;
+    }
+    .scope-summary strong { color: #1a1a1a; }
+    .scope-summary .scope-nudge { display: block; color: #888; margin-top: 2px; font-size: 11px; }
+    .scope-summary[hidden] { display: none; }
 
     .toggle { display: inline-flex; border: 1px solid #d4d4d4; border-radius: 6px; overflow: hidden; background: #f5f5f5; flex-shrink: 0; }
     .toggle button { background: transparent; border: none; padding: 6px 12px; font-size: 12px; font-weight: 600; color: #888; cursor: pointer; font-family: inherit; }
@@ -145,11 +228,11 @@
 
     .empty { color: #aaa; font-size: 13px; text-align: center; padding: 20px; border: 1px dashed #e0e0e0; border-radius: 6px; background: white; }
 
-    .legend { display: flex; gap: 16px; margin-bottom: 12px; font-size: 12px; color: #666; }
+    .legend { display: flex; gap: 16px; margin-bottom: 12px; font-size: 12px; color: #666; flex-wrap: wrap; }
     .legend-item { display: flex; align-items: center; gap: 6px; }
     .legend-swatch { width: 10px; height: 10px; border-radius: 2px; }
 
-    .actions { display: flex; gap: 8px; margin-top: 24px; align-items: center; }
+    .actions { display: flex; gap: 8px; margin-top: 24px; align-items: center; flex-wrap: wrap; }
     button.primary { background: #1a1a1a; color: white; border: none; padding: 10px 18px; border-radius: 6px; font-size: 14px; cursor: pointer; font-family: inherit; }
     button.primary:hover { background: #333; }
     button.secondary { background: white; color: #1a1a1a; border: 1px solid #d4d4d4; padding: 10px 18px; border-radius: 6px; font-size: 14px; cursor: pointer; font-family: inherit; }
@@ -166,6 +249,7 @@
     .test-result.show { display: block; }
     .test-result.blocked { background: #fee2e2; color: #991b1b; }
     .test-result.allowed { background: #d1fae5; color: #065f46; }
+    .test-result.err { background: #fef3c7; color: #78350f; }
     .test-result .label { font-weight: 600; margin-right: 6px; }
     .test-result code { background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
 
@@ -179,6 +263,65 @@
     .password-row { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
     .password-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .password-card { background: white; border: 1px solid #e5e5e5; border-radius: 8px; padding: 16px 18px; }
+
+    /* Lock-screen "edit without a password" bypass */
+    .lock-bypass { margin-top: 20px; padding-top: 16px; border-top: 1px solid #eee; text-align: center; }
+    .lock-bypass-sep { color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 12px; }
+    .lock-bypass button { width: 100%; }
+    .lock-bypass-hint { color: #888; font-size: 12px; margin-top: 8px; line-height: 1.5; }
+
+    /* Rule-change approval panel */
+    .rule-appeal {
+      margin-top: 16px;
+      background: white;
+      border: 1px solid #e5e5e5;
+      border-radius: 8px;
+      padding: 20px;
+    }
+    .rule-appeal[hidden] { display: none; }
+    .rule-appeal-header { font-size: 15px; font-weight: 600; margin-bottom: 4px; color: #1a1a1a; }
+    .rule-appeal-hint { color: #888; font-size: 13px; line-height: 1.55; margin-bottom: 14px; }
+    .rule-appeal-diff {
+      margin: 0 0 14px; padding: 10px 12px 10px 28px;
+      background: #f9f9f9; border: 1px solid #e5e5e5; border-radius: 6px;
+      font-size: 12px; color: #444; line-height: 1.55;
+      max-height: 200px; overflow-y: auto;
+    }
+    .rule-appeal-diff li { margin: 2px 0; word-break: break-word; }
+    .rule-appeal textarea {
+      width: 100%; min-height: 90px;
+      background: white; color: #1a1a1a;
+      border: 1px solid #d4d4d4; border-radius: 6px;
+      padding: 10px 12px;
+      font-family: inherit; font-size: 14px; line-height: 1.5;
+      resize: vertical;
+    }
+    .rule-appeal textarea:focus { outline: none; border-color: #888; }
+    .rule-appeal-submit-row { display: flex; gap: 8px; margin-top: 12px; }
+    .rule-appeal-status {
+      margin-top: 14px; color: #666; font-size: 13px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .rule-appeal-status[hidden] { display: none; }
+    .rule-appeal-spinner {
+      width: 14px; height: 14px;
+      border: 2px solid #e5e5e5; border-top-color: #1a1a1a;
+      border-radius: 50%;
+      animation: rule-appeal-spin 0.7s linear infinite;
+    }
+    @keyframes rule-appeal-spin { to { transform: rotate(360deg); } }
+    .rule-appeal-result {
+      margin-top: 14px; padding: 12px 14px;
+      border-radius: 6px; font-size: 14px; line-height: 1.5;
+    }
+    .rule-appeal-result[hidden] { display: none; }
+    .rule-appeal-result.approved { background: #d1fae5; border: 1px solid #6ee7b7; color: #065f46; }
+    .rule-appeal-result.denied { background: #fee2e2; border: 1px solid #fca5a5; color: #991b1b; }
+    .rule-appeal-result-label {
+      display: block;
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+      font-weight: 700; margin-bottom: 6px;
+    }
   </style>
 </head>
 <body>
@@ -190,6 +333,11 @@
       <div class="lock-actions">
         <button class="primary" id="unlockBtn">Unlock</button>
         <span class="status" id="unlockStatus"></span>
+      </div>
+      <div class="lock-bypass">
+        <div class="lock-bypass-sep">&mdash; or &mdash;</div>
+        <button class="secondary" id="bypassBtn">Edit without a password</button>
+        <div class="lock-bypass-hint">No password needed. Each weakening edit is reviewed by Claude Sonnet before it saves.</div>
       </div>
       <div class="lock-reset">
         <div id="resetIdle">
@@ -209,6 +357,10 @@
   <div id="content" style="display:none;">
   <h1>AI Search Filter</h1>
   <div class="sub">Multi-layer content filter powered by Claude Haiku.</div>
+
+  <div class="appeal-mode-banner" id="appealModeBanner" hidden>
+    <strong>Editing without a password.</strong> Weakening edits (deleting block rules, adding allow rules, turning off scanners, revising "About you", etc.) need approval from Claude Sonnet before they save. Strengthening edits save freely.
+  </div>
 
   <div class="warning">
     <strong>Privacy note:</strong> Visited URLs (outside your allow list) are sent to Anthropic's API. Image scanner and post scanner add image URLs and post text to that. Add sensitive sites to "Always-allow domains" to skip them entirely.
@@ -270,13 +422,15 @@
       <strong>Block</strong> prevents matching content.
       <strong>Allow</strong> force-allows content that would otherwise be blocked.
       <strong>Only allow</strong> turns on <em>allowlist mode</em>: as soon as any "Only allow" rule exists, everything not matching one is blocked by default. Block rules still subtract from that set; Allow rules still override blocks.
-      <br>The <em>Applies to</em> field scopes a rule to specific hostnames (e.g. <code>youtube.com</code>) — leave blank to apply on every site. On a site no Only-allow rule scopes to, default-allow takes over.
+      <br>Click the scope chip below each rule to limit it to specific hostnames (e.g. <code>youtube.com</code>). Scoped rules aren't sent to Claude on other sites — faster and cheaper. On a site no Only-allow rule scopes to, default-allow takes over.
+      <br>The switch on the left of each rule disables it without deleting — disabled rules aren't sent to Claude at all. Disabling a Block or Only-allow rule needs approval; disabling an Allow rule does not.
     </div>
     <div class="legend">
       <div class="legend-item"><span class="legend-swatch" style="background:#ef4444"></span> Block</div>
       <div class="legend-item"><span class="legend-swatch" style="background:#10b981"></span> Allow (overrides block)</div>
       <div class="legend-item"><span class="legend-swatch" style="background:#6366f1"></span> Only allow (block everything else)</div>
     </div>
+    <div id="rulesSummary" class="scope-summary" hidden></div>
     <div id="rules"></div>
     <div style="display: flex; gap: 8px; margin-top: 12px;">
       <button class="add-btn" id="addRule" style="margin-top: 0;">+ Add rule</button>
@@ -360,10 +514,52 @@
     </select>
   </section>
 
+  <section>
+    <h2>Strictness</h2>
+    <div class="section-hint">How aggressively the AI applies your rules and reviews your appeals. Defaults match the historical behavior of the extension — move the dial only if it feels off.</div>
+    <label style="display:block; margin-bottom: 12px;">Content strictness (Layer 0 page checks and Layer 3 post text):
+      <select id="contentStrictness">
+        <option value="very-lenient">Very lenient &mdash; block only on obvious matches</option>
+        <option value="lenient">Lenient &mdash; favor allowing on ambiguity</option>
+        <option value="balanced" selected>Balanced &mdash; current behavior</option>
+        <option value="strict">Strict &mdash; favor blocking on ambiguity</option>
+        <option value="very-strict">Very strict &mdash; block on any plausible match</option>
+      </select>
+    </label>
+    <label style="display:block;">Appeal strictness (when Claude reviews your appeals):
+      <select id="appealStrictness">
+        <option value="very-lenient">Very lenient &mdash; overturn on any credible reason</option>
+        <option value="lenient">Lenient &mdash; favor overturning</option>
+        <option value="balanced">Balanced</option>
+        <option value="strict" selected>Strict &mdash; current behavior (favor upholding)</option>
+        <option value="very-strict">Very strict &mdash; overturn only on obvious classifier errors</option>
+      </select>
+    </label>
+  </section>
+
   <div class="actions">
     <button class="primary" id="save">Save</button>
     <button class="secondary" id="clearCache">Clear cache</button>
     <span class="status" id="status"></span>
+  </div>
+
+  <div class="rule-appeal" id="ruleAppealPanel" hidden>
+    <div class="rule-appeal-header">Approval required</div>
+    <div class="rule-appeal-hint">These edits would weaken your filter. Claude Sonnet reviews them strictly — "I want to" or "just this once" will not pass. Concrete real-life needs, false-positive fixes, and scoped exceptions can.</div>
+    <ul class="rule-appeal-diff" id="ruleAppealDiff"></ul>
+    <textarea id="ruleAppealText" placeholder="Explain why this change is needed — be specific. Vague justifications will be denied."></textarea>
+    <div class="rule-appeal-submit-row">
+      <button class="primary" id="ruleAppealSubmit">Submit</button>
+      <button class="secondary" id="ruleAppealCancel">Cancel</button>
+    </div>
+    <div class="rule-appeal-status" id="ruleAppealStatus" hidden>
+      <div class="rule-appeal-spinner"></div>
+      <div>Claude is reviewing…</div>
+    </div>
+    <div class="rule-appeal-result" id="ruleAppealResult" hidden>
+      <div class="rule-appeal-result-label" id="ruleAppealResultLabel"></div>
+      <div id="ruleAppealResultReason"></div>
+    </div>
   </div>
 
   <section style="margin-top: 40px;">

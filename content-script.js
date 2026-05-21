@@ -159,6 +159,8 @@
       const d = String(raw).trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
       if (!d) continue;
       if (h === d || h.endsWith('.' + d)) return true;
+      // Bare-word entry (e.g. "wikipedia"): match if any host label equals it.
+      if (!d.includes('.') && h.split('.').includes(d)) return true;
     }
     return false;
   }

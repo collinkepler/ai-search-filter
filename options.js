@@ -2,6 +2,85 @@ const $ = (id) => document.getElementById(id);
 
 let rules = [];
 
+const SETTINGS_STORAGE_KEYS = [
+  'apiKey', 'rules', 'failMode', 'allowDomains', 'imageScannerExcludeDomains',
+  'enableSiteFilters', 'enableImageScanner', 'enablePostScanner',
+  'intelligentImageScanner', 'imageMinSize', 'postAction',
+  'personalContext', 'personalContextOnHotPaths',
+  'contentStrictness', 'appealStrictness'
+];
+
+const STRICTNESS_ORDER = ['very-lenient', 'lenient', 'balanced', 'strict', 'very-strict'];
+function strictnessRank(v) {
+  const i = STRICTNESS_ORDER.indexOf(v);
+  return i === -1 ? STRICTNESS_ORDER.indexOf('balanced') : i;
+}
+
+let pendingDiff = null;
+let pendingSettings = null;
+
+// Keyword → suggested scope hosts. Word-boundary regex so "linkedin" inside a longer
+// phrase doesn't false-positive on arbitrary text. Kept short on purpose.
+const KNOWN_SITES = [
+  { kw: /\b(youtube|yt|shorts)\b/i, hosts: ['youtube.com'] },
+  { kw: /\b(twitter|tweet)\b/i, hosts: ['twitter.com', 'x.com'] },
+  { kw: /\bx\.com\b/i, hosts: ['x.com', 'twitter.com'] },
+  { kw: /\b(reddit|subreddit)\b/i, hosts: ['reddit.com'] },
+  { kw: /\b(instagram|insta)\b/i, hosts: ['instagram.com'] },
+  { kw: /\btiktok\b/i, hosts: ['tiktok.com'] },
+  { kw: /\b(facebook|fb)\b/i, hosts: ['facebook.com'] },
+  { kw: /\blinkedin\b/i, hosts: ['linkedin.com'] },
+  { kw: /\bamazon\b/i, hosts: ['amazon.com'] },
+  { kw: /\bgithub\b/i, hosts: ['github.com'] },
+  { kw: /\btwitch\b/i, hosts: ['twitch.tv'] },
+  { kw: /\bpinterest\b/i, hosts: ['pinterest.com'] },
+  { kw: /\b(pornhub|xvideos|xhamster|redtube)\b/i, hosts: ['pornhub.com', 'xvideos.com', 'xhamster.com'] }
+];
+
+// In-memory only: dismissals reset on page reload by design.
+const dismissedSuggestions = new Set();
+// Track which rules have the scope editor expanded, keyed by rule.id (survives re-renders).
+const expandedScopeEditors = new Set();
+
+function suggestScopeForText(text) {
+  if (!text || text.length < 6) return [];
+  const hits = new Set();
+  for (const entry of KNOWN_SITES) {
+    if (entry.kw.test(text)) entry.hosts.forEach((h) => hits.add(h));
+  }
+  return Array.from(hits).slice(0, 3);
+}
+
+function computeScopeSummary(rs) {
+  const total = rs.length;
+  let scoped = 0;
+  for (const r of rs) {
+    if (Array.isArray(r.scope) && r.scope.length > 0) scoped++;
+  }
+  return { total, scoped, universal: total - scoped };
+}
+
+function renderScopeSummary() {
+  const el = $('rulesSummary');
+  if (!el) return;
+  const { total, scoped, universal } = computeScopeSummary(rules);
+  if (total === 0) { el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  el.innerHTML = '';
+  const line = document.createElement('span');
+  line.innerHTML =
+    `<strong>${total}</strong> rule${total === 1 ? '' : 's'} · ` +
+    `<strong>${scoped}</strong> scoped to specific sites · ` +
+    `<strong>${universal}</strong> fire${universal === 1 ? 's' : ''} on every page`;
+  el.appendChild(line);
+  if (universal >= 5) {
+    const nudge = document.createElement('span');
+    nudge.className = 'scope-nudge';
+    nudge.textContent = 'Scoping rules to specific sites means they aren’t sent to Claude on other sites — faster and cheaper.';
+    el.appendChild(nudge);
+  }
+}
+
 const STRICT_PRESET_RULES = [
   'Sexually explicit content: pornography, nudity, sex acts, exposed genitals, exposed breasts, explicit sexual imagery or descriptions',
   'Sexually suggestive content: lingerie/underwear photoshoots, swimwear in sexualized poses, thirst-trap content, OnlyFans/Patreon-style adult creators, cleavage- or body-emphasis framing, sexualized fitness/gym content',
@@ -14,13 +93,16 @@ async function load() {
     'apiKey', 'rules', 'blocklist', 'failMode', 'allowDomains',
     'enableSiteFilters', 'enableImageScanner', 'enablePostScanner',
     'imageMinSize', 'postAction', 'imageScannerExcludeDomains', 'personalContext',
-    'personalContextOnHotPaths', 'intelligentImageScanner'
+    'personalContextOnHotPaths', 'intelligentImageScanner',
+    'contentStrictness', 'appealStrictness'
   ]);
 
   $('apiKey').value = stored.apiKey || '';
   $('failMode').value = stored.failMode || 'open';
   $('allowDomains').value = Array.isArray(stored.allowDomains) ? stored.allowDomains.join('\n') : '';
   $('personalContext').value = stored.personalContext || '';
+  $('contentStrictness').value = stored.contentStrictness || 'balanced';
+  $('appealStrictness').value = stored.appealStrictness || 'strict';
   $('imageScannerExcludeDomains').value = Array.isArray(stored.imageScannerExcludeDomains) ? stored.imageScannerExcludeDomains.join('\n') : '';
 
   $('enableSiteFilters').checked = stored.enableSiteFilters !== false; // default ON
@@ -34,7 +116,9 @@ async function load() {
 
   // Rules + migration
   if (Array.isArray(stored.rules) && stored.rules.length) {
-    rules = stored.rules;
+    const anyMissingId = stored.rules.some((r) => !r.id);
+    rules = stored.rules.map((r) => ({ ...r, id: r.id || genId() }));
+    if (anyMissingId) await chrome.storage.local.set({ rules });
   } else if (typeof stored.blocklist === 'string' && stored.blocklist.trim()) {
     rules = stored.blocklist.split('\n').map((l) => l.trim()).filter(Boolean)
       .map((text) => ({ id: genId(), text, mode: 'block' }));
@@ -55,13 +139,33 @@ function renderRules() {
     empty.className = 'empty';
     empty.textContent = 'No rules yet. Add one to start filtering.';
     container.appendChild(empty);
+    renderScopeSummary();
     return;
   }
 
   rules.forEach((rule, idx) => {
     const row = document.createElement('div');
     row.className = 'rule-row';
+    if (rule.enabled === false) row.classList.add('disabled');
     row.dataset.mode = rule.mode;
+
+    const enabledLabel = document.createElement('label');
+    enabledLabel.className = 'switch rule-enabled-switch';
+    enabledLabel.title = rule.enabled === false
+      ? 'Rule is disabled — not sent to Claude. Click to re-enable.'
+      : 'Rule is active. Click to disable without deleting.';
+    const enabledInput = document.createElement('input');
+    enabledInput.type = 'checkbox';
+    enabledInput.checked = rule.enabled !== false;
+    enabledInput.addEventListener('change', (e) => {
+      rules[idx].enabled = e.target.checked;
+      renderRules();
+    });
+    const enabledSlider = document.createElement('span');
+    enabledSlider.className = 'slider';
+    enabledLabel.appendChild(enabledInput);
+    enabledLabel.appendChild(enabledSlider);
+    row.appendChild(enabledLabel);
 
     const input = document.createElement('textarea');
     input.rows = 1;
@@ -75,7 +179,11 @@ function renderRules() {
       input.style.height = 'auto';
       input.style.height = input.scrollHeight + 'px';
     };
-    input.addEventListener('input', (e) => { rules[idx].text = e.target.value; autosize(); });
+    input.addEventListener('input', (e) => {
+      rules[idx].text = e.target.value;
+      autosize();
+      updateSuggestion(idx, suggestionContainer);
+    });
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); }
     });
@@ -115,23 +223,127 @@ function renderRules() {
     row.appendChild(toggle);
     row.appendChild(del);
 
-    const scopeRow = document.createElement('div');
-    scopeRow.className = 'rule-scope-row';
-    const scopeLabel = document.createElement('label');
-    scopeLabel.textContent = 'Applies to:';
+    // Scope chip (always visible) + collapsible editor below.
+    const chipRow = document.createElement('div');
+    chipRow.className = 'rule-scope-chip-row';
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'rule-scope-chip';
+    chipRow.appendChild(chip);
+    row.appendChild(chipRow);
+
+    const editor = document.createElement('div');
+    editor.className = 'rule-scope-editor';
+    editor.hidden = !expandedScopeEditors.has(rule.id);
+
     const scopeInput = document.createElement('input');
     scopeInput.type = 'text';
     scopeInput.value = Array.isArray(rule.scope) ? rule.scope.join(', ') : '';
-    scopeInput.placeholder = 'any site (e.g. youtube.com, twitter.com)';
+    scopeInput.placeholder = 'e.g. youtube.com, reddit.com — leave blank to apply everywhere';
+
+    const help = document.createElement('div');
+    help.className = 'scope-help';
+    help.textContent = 'Scoping a rule means it isn’t sent to Claude on other sites — faster and cheaper.';
+
+    editor.appendChild(scopeInput);
+    editor.appendChild(help);
+    row.appendChild(editor);
+
+    // Suggestion strip — re-computed on rule-text changes via the input handler above.
+    const suggestionContainer = document.createElement('div');
+    suggestionContainer.className = 'rule-scope-suggestion-container';
+    row.appendChild(suggestionContainer);
+
+    paintChip(chip, rules[idx]);
+
     scopeInput.addEventListener('input', (e) => {
       rules[idx].scope = e.target.value.split(',').map((s) => s.trim()).filter(Boolean);
+      paintChip(chip, rules[idx]);
+      renderScopeSummary();
+      updateSuggestion(idx, suggestionContainer);
     });
-    scopeRow.appendChild(scopeLabel);
-    scopeRow.appendChild(scopeInput);
-    row.appendChild(scopeRow);
+
+    chip.addEventListener('click', () => {
+      const willExpand = editor.hidden;
+      editor.hidden = !willExpand;
+      if (willExpand) {
+        expandedScopeEditors.add(rule.id);
+        scopeInput.focus();
+      } else {
+        expandedScopeEditors.delete(rule.id);
+      }
+    });
+
+    updateSuggestion(idx, suggestionContainer);
 
     container.appendChild(row);
   });
+
+  renderScopeSummary();
+}
+
+function paintChip(chip, rule) {
+  const isScoped = Array.isArray(rule.scope) && rule.scope.length > 0;
+  chip.dataset.state = isScoped ? 'scoped' : 'universal';
+  chip.innerHTML = '';
+  if (isScoped) {
+    chip.appendChild(document.createTextNode('Only on: '));
+    const hostSpan = document.createElement('span');
+    hostSpan.className = 'sg-host';
+    hostSpan.textContent = rule.scope.join(', ');
+    chip.appendChild(hostSpan);
+  } else {
+    chip.appendChild(document.createTextNode('Fires on every site'));
+  }
+  const caret = document.createElement('span');
+  caret.className = 'caret';
+  caret.textContent = '▾';
+  chip.appendChild(caret);
+}
+
+function updateSuggestion(idx, container) {
+  container.innerHTML = '';
+  const rule = rules[idx];
+  if (!rule) return;
+  if (Array.isArray(rule.scope) && rule.scope.length > 0) return;
+  if (dismissedSuggestions.has(rule.id)) return;
+  const suggested = suggestScopeForText(rule.text || '');
+  if (suggested.length === 0) return;
+
+  const strip = document.createElement('div');
+  strip.className = 'rule-scope-suggestion';
+
+  const label = document.createElement('span');
+  label.textContent = 'Suggested scope:';
+
+  const host = document.createElement('span');
+  host.className = 'sg-host';
+  host.textContent = suggested.join(', ');
+
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'sg-add';
+  add.textContent = suggested.length > 1 ? 'Add all' : 'Add';
+  add.addEventListener('click', () => {
+    rules[idx].scope = suggested.slice();
+    renderRules();
+  });
+
+  const dismiss = document.createElement('button');
+  dismiss.type = 'button';
+  dismiss.className = 'sg-dismiss';
+  dismiss.innerHTML = '&times;';
+  dismiss.title = 'Dismiss suggestion';
+  dismiss.addEventListener('click', () => {
+    dismissedSuggestions.add(rule.id);
+    updateSuggestion(idx, container);
+  });
+
+  strip.appendChild(label);
+  strip.appendChild(host);
+  strip.appendChild(add);
+  strip.appendChild(dismiss);
+  container.appendChild(strip);
 }
 
 function setMode(idx, mode) {
@@ -160,23 +372,36 @@ $('addStrictPreset').addEventListener('click', () => {
   showStatus(added ? `Added ${added} preset rule${added === 1 ? '' : 's'}. Click Save to apply.` : 'Preset rules are already present.', 'ok');
 });
 
-$('save').addEventListener('click', async () => {
-  if (!(await isWriteAllowed())) return;
-  const normHost = (s) => String(s).trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-  const clean = rules.filter((r) => r.text && r.text.trim()).map((r) => ({
-    ...r,
-    scope: Array.isArray(r.scope) ? Array.from(new Set(r.scope.map(normHost).filter(Boolean))) : []
-  }));
-  const allowDomains = $('allowDomains').value.split('\n')
-    .map((l) => normHost(l))
-    .filter(Boolean);
-  const imageScannerExcludeDomains = $('imageScannerExcludeDomains').value.split('\n')
-    .map((l) => normHost(l))
-    .filter(Boolean);
+function normHost(s) {
+  return String(s).trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+}
 
-  await chrome.storage.local.set({
+// Expands one user-typed scope/domain entry into canonical hostnames.
+// Bare words known to KNOWN_SITES (e.g. "yt", "twitter") become their proper hosts;
+// unknown bare words pass through so the runtime label-matcher can still handle them.
+function expandHost(s) {
+  const n = normHost(s);
+  if (!n) return [];
+  if (n.includes('.')) return [n];
+  for (const site of KNOWN_SITES) {
+    if (site.kw.test(n)) return site.hosts.slice();
+  }
+  return [n];
+}
+
+function buildNewSettings() {
+  const cleanRules = rules.filter((r) => r.text && r.text.trim()).map((r) => ({
+    id: r.id || genId(),
+    text: r.text,
+    mode: r.mode || 'block',
+    enabled: r.enabled !== false,
+    scope: Array.isArray(r.scope) ? Array.from(new Set(r.scope.flatMap(expandHost))) : []
+  }));
+  const allowDomains = Array.from(new Set($('allowDomains').value.split('\n').flatMap(expandHost)));
+  const imageScannerExcludeDomains = Array.from(new Set($('imageScannerExcludeDomains').value.split('\n').flatMap(expandHost)));
+  return {
     apiKey: $('apiKey').value.trim(),
-    rules: clean,
+    rules: cleanRules,
     failMode: $('failMode').value,
     allowDomains,
     imageScannerExcludeDomains,
@@ -187,14 +412,379 @@ $('save').addEventListener('click', async () => {
     imageMinSize: Math.max(50, Math.min(500, parseInt($('imageMinSize').value, 10) || 80)),
     postAction: $('postAction').value,
     personalContext: $('personalContext').value.trim(),
-    personalContextOnHotPaths: $('personalContextOnHotPaths').checked
+    personalContextOnHotPaths: $('personalContextOnHotPaths').checked,
+    contentStrictness: $('contentStrictness').value,
+    appealStrictness: $('appealStrictness').value
+  };
+}
+
+function normalizeStoredSettings(stored) {
+  const s = stored || {};
+  return {
+    apiKey: (s.apiKey || '').trim(),
+    rules: Array.isArray(s.rules) ? s.rules.map((r) => ({
+      id: r.id || '',
+      text: r.text || '',
+      mode: r.mode || 'block',
+      enabled: r.enabled !== false,
+      scope: Array.isArray(r.scope) ? r.scope : []
+    })) : [],
+    failMode: s.failMode || 'open',
+    allowDomains: Array.isArray(s.allowDomains) ? s.allowDomains : [],
+    imageScannerExcludeDomains: Array.isArray(s.imageScannerExcludeDomains) ? s.imageScannerExcludeDomains : [],
+    enableSiteFilters: s.enableSiteFilters !== false,
+    enableImageScanner: s.enableImageScanner === true,
+    enablePostScanner: s.enablePostScanner === true,
+    intelligentImageScanner: s.intelligentImageScanner !== false,
+    imageMinSize: Math.max(50, Math.min(500, parseInt(s.imageMinSize, 10) || 80)),
+    postAction: s.postAction || 'hide',
+    personalContext: (s.personalContext || '').trim(),
+    personalContextOnHotPaths: s.personalContextOnHotPaths !== false,
+    contentStrictness: s.contentStrictness || 'balanced',
+    appealStrictness: s.appealStrictness || 'strict'
+  };
+}
+
+function sameArray(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function computeDiff(current, next) {
+  const diff = { rules: { added: [], removed: [], modified: [] }, settings: {} };
+
+  const cById = new Map();
+  for (const r of current.rules) if (r.id) cById.set(r.id, r);
+  const nIds = new Set();
+
+  for (const r of next.rules) {
+    if (r.id) nIds.add(r.id);
+    if (!r.id || !cById.has(r.id)) {
+      diff.rules.added.push({ id: r.id, text: r.text, mode: r.mode, scope: r.scope, enabled: r.enabled });
+    } else {
+      const old = cById.get(r.id);
+      const textChanged = (old.text || '').trim() !== (r.text || '').trim();
+      const modeChanged = (old.mode || 'block') !== (r.mode || 'block');
+      const oldScope = Array.isArray(old.scope) ? old.scope : [];
+      const newScope = Array.isArray(r.scope) ? r.scope : [];
+      const scopeChanged = !sameArray(oldScope, newScope);
+      const oldEnabled = old.enabled !== false;
+      const newEnabled = r.enabled !== false;
+      const enabledChanged = oldEnabled !== newEnabled;
+      if (textChanged || modeChanged || scopeChanged || enabledChanged) {
+        diff.rules.modified.push({
+          id: r.id,
+          oldText: old.text, newText: r.text,
+          oldMode: old.mode, newMode: r.mode,
+          oldScope, newScope,
+          oldEnabled, newEnabled,
+          textChanged, modeChanged, scopeChanged, enabledChanged
+        });
+      }
+    }
+  }
+  for (const r of current.rules) {
+    if (r.id && !nIds.has(r.id)) {
+      diff.rules.removed.push({ id: r.id, text: r.text, mode: r.mode, scope: r.scope, enabled: r.enabled });
+    }
+  }
+
+  const compareKeys = [
+    'apiKey', 'failMode', 'allowDomains', 'imageScannerExcludeDomains',
+    'enableSiteFilters', 'enableImageScanner', 'enablePostScanner',
+    'intelligentImageScanner', 'imageMinSize', 'postAction', 'personalContextOnHotPaths',
+    'contentStrictness', 'appealStrictness'
+  ];
+  for (const key of compareKeys) {
+    const o = current[key];
+    const n = next[key];
+    const equal = Array.isArray(o) || Array.isArray(n)
+      ? sameArray(Array.isArray(o) ? o : [], Array.isArray(n) ? n : [])
+      : o === n;
+    if (!equal) diff.settings[key] = { old: o, new: n };
+  }
+
+  if (current.personalContext !== next.personalContext) {
+    diff.personalContext = { old: current.personalContext, new: next.personalContext };
+  }
+  return diff;
+}
+
+function isDiffEmpty(diff) {
+  return !diff.personalContext &&
+    diff.rules.added.length === 0 &&
+    diff.rules.removed.length === 0 &&
+    diff.rules.modified.length === 0 &&
+    Object.keys(diff.settings).length === 0;
+}
+
+function isUniversalScope(s) { return !Array.isArray(s) || s.length === 0; }
+
+function scopeGrewForBlockOrOnlyAllow(oldS, newS) {
+  if (isUniversalScope(newS)) return !isUniversalScope(oldS); // list -> all = grew
+  if (isUniversalScope(oldS)) return false;                   // all -> list = shrank
+  for (const h of oldS) if (!newS.includes(h)) return false;  // old item lost -> not pure grow
+  return newS.length > oldS.length;
+}
+
+function scopeShrankForAllow(oldS, newS) {
+  if (isUniversalScope(oldS)) return !isUniversalScope(newS); // all -> list = shrank
+  if (isUniversalScope(newS)) return false;                   // list -> all = grew
+  for (const h of newS) if (!oldS.includes(h)) return false;  // new item not in old -> not pure shrink
+  return newS.length < oldS.length;
+}
+
+function arrayOnlyRemoved(oldA, newA) {
+  const o = Array.isArray(oldA) ? oldA : [];
+  const n = Array.isArray(newA) ? newA : [];
+  for (const item of n) if (!o.includes(item)) return false;
+  return n.length < o.length;
+}
+
+function isPurelyStrengthening(diff) {
+  if (diff.personalContext) return false;
+
+  for (const r of diff.rules.added) {
+    if (r.enabled === false) continue; // disabled = no effect, neither strengthens nor weakens
+    if (r.mode !== 'block' && r.mode !== 'only-allow') return false;
+  }
+  for (const r of diff.rules.removed) {
+    if (r.enabled === false) continue; // already had no effect
+    if (r.mode !== 'allow') return false;
+  }
+  for (const m of diff.rules.modified) {
+    if (m.textChanged) return false;
+    const effectiveMode = m.modeChanged ? m.newMode : m.oldMode;
+    if (m.modeChanged) {
+      const okModeChange =
+        (m.oldMode === 'allow' && (m.newMode === 'block' || m.newMode === 'only-allow')) ||
+        (m.oldMode === 'only-allow' && m.newMode === 'block');
+      if (!okModeChange) return false;
+    }
+    if (m.scopeChanged) {
+      if (effectiveMode === 'allow') {
+        if (!scopeShrankForAllow(m.oldScope, m.newScope)) return false;
+      } else {
+        if (!scopeGrewForBlockOrOnlyAllow(m.oldScope, m.newScope)) return false;
+      }
+    }
+    if (m.enabledChanged) {
+      if (m.newEnabled) {
+        // Enabling an allow rule = weakening
+        if (effectiveMode === 'allow') return false;
+      } else {
+        // Disabling a block/only-allow rule = weakening
+        if (effectiveMode === 'block' || effectiveMode === 'only-allow') return false;
+      }
+    }
+  }
+
+  for (const key of Object.keys(diff.settings)) {
+    const { old: o, new: n } = diff.settings[key];
+    if (key === 'apiKey') continue;
+    if (key === 'enableSiteFilters' || key === 'enableImageScanner' ||
+        key === 'enablePostScanner' || key === 'intelligentImageScanner' ||
+        key === 'personalContextOnHotPaths') {
+      if (!(o === false && n === true)) return false;
+      continue;
+    }
+    if (key === 'failMode') {
+      if (!(o === 'open' && n === 'closed')) return false;
+      continue;
+    }
+    if (key === 'postAction') {
+      if (!(o === 'dim' && n === 'hide')) return false;
+      continue;
+    }
+    if (key === 'imageMinSize') {
+      if (!(typeof o === 'number' && typeof n === 'number' && n < o)) return false;
+      continue;
+    }
+    if (key === 'allowDomains' || key === 'imageScannerExcludeDomains') {
+      if (!arrayOnlyRemoved(o, n)) return false;
+      continue;
+    }
+    if (key === 'contentStrictness' || key === 'appealStrictness') {
+      if (strictnessRank(n) < strictnessRank(o)) return false;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+async function commitSave(next) {
+  await chrome.storage.local.set({
+    apiKey: next.apiKey,
+    rules: next.rules,
+    failMode: next.failMode,
+    allowDomains: next.allowDomains,
+    imageScannerExcludeDomains: next.imageScannerExcludeDomains,
+    enableSiteFilters: next.enableSiteFilters,
+    enableImageScanner: next.enableImageScanner,
+    enablePostScanner: next.enablePostScanner,
+    intelligentImageScanner: next.intelligentImageScanner,
+    imageMinSize: next.imageMinSize,
+    postAction: next.postAction,
+    personalContext: next.personalContext,
+    personalContextOnHotPaths: next.personalContextOnHotPaths,
+    contentStrictness: next.contentStrictness,
+    appealStrictness: next.appealStrictness
   });
   await chrome.storage.local.remove('aisf-cache');
-  rules = clean;
+  rules = next.rules;
   renderRules();
-  $('allowDomains').value = allowDomains.join('\n');
-  $('imageScannerExcludeDomains').value = imageScannerExcludeDomains.join('\n');
+  $('allowDomains').value = next.allowDomains.join('\n');
+  $('imageScannerExcludeDomains').value = next.imageScannerExcludeDomains.join('\n');
   showStatus('Saved.', 'ok');
+}
+
+$('save').addEventListener('click', async () => {
+  hideRuleAppealPanel();
+  const next = buildNewSettings();
+  const storedRaw = await chrome.storage.local.get(SETTINGS_STORAGE_KEYS);
+  const current = normalizeStoredSettings(storedRaw);
+  const diff = computeDiff(current, next);
+
+  if (isDiffEmpty(diff)) {
+    showStatus('No changes.', 'ok');
+    return;
+  }
+  if (unlocked) {
+    return commitSave(next);
+  }
+  if (isPurelyStrengthening(diff)) {
+    return commitSave(next);
+  }
+  openRuleAppealPanel(diff, next);
+});
+
+// ===== Rule-change appeal panel =====
+
+function openRuleAppealPanel(diff, next) {
+  pendingDiff = diff;
+  pendingSettings = next;
+  $('ruleAppealPanel').hidden = false;
+  $('ruleAppealResult').hidden = true;
+  $('ruleAppealStatus').hidden = true;
+  $('ruleAppealText').value = '';
+  $('ruleAppealText').disabled = false;
+  $('ruleAppealSubmit').disabled = false;
+  $('ruleAppealCancel').disabled = false;
+  renderDiffList(diff);
+  $('ruleAppealText').focus();
+  $('ruleAppealPanel').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function hideRuleAppealPanel() {
+  $('ruleAppealPanel').hidden = true;
+  pendingDiff = null;
+  pendingSettings = null;
+}
+
+function renderDiffList(diff) {
+  const ul = $('ruleAppealDiff');
+  ul.innerHTML = '';
+  for (const text of describeDiff(diff)) {
+    const li = document.createElement('li');
+    li.textContent = text;
+    ul.appendChild(li);
+  }
+}
+
+function describeDiff(diff) {
+  const items = [];
+  for (const r of diff.rules.added) {
+    const disabledNote = (r.enabled === false) ? ' (disabled)' : '';
+    items.push(`Add ${r.mode} rule${disabledNote}: "${r.text}"`);
+  }
+  for (const r of diff.rules.removed) {
+    const disabledNote = (r.enabled === false) ? ' (was disabled)' : '';
+    items.push(`Remove ${r.mode} rule${disabledNote}: "${r.text}"`);
+  }
+  for (const m of diff.rules.modified) {
+    if (m.enabledChanged && !m.textChanged && !m.modeChanged && !m.scopeChanged) {
+      items.push(`${m.newEnabled ? 'Enable' : 'Disable'} ${m.newMode || m.oldMode} rule: "${m.newText || m.oldText}"`);
+      continue;
+    }
+    const parts = [];
+    if (m.textChanged) parts.push(`text "${m.oldText}" → "${m.newText}"`);
+    if (m.modeChanged) parts.push(`mode ${m.oldMode} → ${m.newMode}`);
+    if (m.scopeChanged) parts.push(`scope [${(m.oldScope || []).join(', ') || 'all sites'}] → [${(m.newScope || []).join(', ') || 'all sites'}]`);
+    if (m.enabledChanged) parts.push(m.newEnabled ? 'enabled' : 'disabled');
+    items.push(`Edit rule: ${parts.join('; ')}`);
+  }
+  for (const key of Object.keys(diff.settings)) {
+    const { old: o, new: n } = diff.settings[key];
+    items.push(`${key}: ${formatVal(o)} → ${formatVal(n)}`);
+  }
+  if (diff.personalContext) items.push('Update "About you" identity blurb');
+  return items;
+}
+
+function formatVal(v) {
+  if (Array.isArray(v)) return v.length ? `[${v.join(', ')}]` : '[empty]';
+  if (v === '' || v == null) return '(empty)';
+  return String(v);
+}
+
+function showRuleAppealResult(approved, reason) {
+  const card = $('ruleAppealResult');
+  card.hidden = false;
+  card.classList.toggle('approved', approved);
+  card.classList.toggle('denied', !approved);
+  $('ruleAppealResultLabel').textContent = approved ? 'Approved' : 'Denied';
+  $('ruleAppealResultReason').textContent = reason;
+}
+
+$('ruleAppealSubmit').addEventListener('click', () => {
+  const text = $('ruleAppealText').value.trim();
+  if (!text) {
+    showRuleAppealResult(false, 'Please state your reasoning for these changes before submitting.');
+    return;
+  }
+  if (!pendingDiff || !pendingSettings) {
+    showRuleAppealResult(false, 'The pending changes were lost — close this panel and try again from Save.');
+    return;
+  }
+
+  $('ruleAppealText').disabled = true;
+  $('ruleAppealSubmit').disabled = true;
+  $('ruleAppealCancel').disabled = true;
+  $('ruleAppealStatus').hidden = false;
+  $('ruleAppealResult').hidden = true;
+
+  const settingsToSave = pendingSettings;
+
+  chrome.runtime.sendMessage({ type: 'appealRuleChange', diff: pendingDiff, appealText: text }, async (response) => {
+    $('ruleAppealStatus').hidden = true;
+    if (chrome.runtime.lastError) {
+      showRuleAppealResult(false, 'Error: ' + chrome.runtime.lastError.message);
+      $('ruleAppealText').disabled = false;
+      $('ruleAppealSubmit').disabled = false;
+      $('ruleAppealCancel').disabled = false;
+      return;
+    }
+    if (response && response.approved) {
+      showRuleAppealResult(true, response.reason || 'Approved.');
+      await commitSave(settingsToSave);
+      pendingDiff = null;
+      pendingSettings = null;
+      $('ruleAppealCancel').disabled = false;
+      $('ruleAppealCancel').textContent = 'Close';
+    } else {
+      showRuleAppealResult(false, (response && response.reason) || 'Denied.');
+      $('ruleAppealText').disabled = false;
+      $('ruleAppealSubmit').disabled = false;
+      $('ruleAppealCancel').disabled = false;
+    }
+  });
+});
+
+$('ruleAppealCancel').addEventListener('click', () => {
+  $('ruleAppealCancel').textContent = 'Cancel';
+  hideRuleAppealPanel();
 });
 
 $('clearCache').addEventListener('click', async () => {
@@ -206,6 +796,18 @@ $('testBtn').addEventListener('click', async () => {
   if (!(await isWriteAllowed())) return;
   const raw = $('testInput').value.trim();
   if (!raw) return;
+
+  if (!unlocked) {
+    const next = buildNewSettings();
+    const storedRaw = await chrome.storage.local.get(SETTINGS_STORAGE_KEYS);
+    const current = normalizeStoredSettings(storedRaw);
+    const diff = computeDiff(current, next);
+    if (!isDiffEmpty(diff) && !isPurelyStrengthening(diff)) {
+      showStatus('Submit the pending changes for approval before testing.', 'err');
+      openRuleAppealPanel(diff, next);
+      return;
+    }
+  }
   const result = $('testResult');
   result.textContent = 'Checking…';
   result.className = 'test-result show';
@@ -407,6 +1009,16 @@ async function unlockWith(password) {
   if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
   $('lockScreen').style.display = 'none';
   $('content').style.display = '';
+  $('appealModeBanner').hidden = true;
+  await load();
+  showPasswordMode('change');
+}
+
+async function enterAppealMode() {
+  if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+  $('lockScreen').style.display = 'none';
+  $('content').style.display = '';
+  $('appealModeBanner').hidden = false;
   await load();
   showPasswordMode('change');
 }
@@ -437,6 +1049,7 @@ $('unlockBtn').addEventListener('click', () => unlockWith($('unlockPassword').va
 $('unlockPassword').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); $('unlockBtn').click(); }
 });
+$('bypassBtn').addEventListener('click', enterAppealMode);
 $('forgotLink').addEventListener('click', (e) => { e.preventDefault(); startReset(); });
 $('cancelResetBtn').addEventListener('click', cancelReset);
 $('completeResetBtn').addEventListener('click', completeReset);
@@ -508,7 +1121,9 @@ async function init() {
   if (state.hasPassword) {
     showLockScreen(state);
   } else {
+    unlocked = true;
     $('content').style.display = '';
+    $('appealModeBanner').hidden = true;
     await load();
     showPasswordMode('set');
   }
