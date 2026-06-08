@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI Search Filter",
-  "version": "1.1.0",
+  "version": "1.2.1",
   "description": "Multi-layer content filter: page-level Claude classification + per-site NSFW CSS + post text classification + image vision check.",
   "icons": {
     "16": "icons/16.png",

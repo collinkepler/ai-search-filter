@@ -5,13 +5,13 @@
 
 const CACHE_KEY = 'aisf-cache';
 const CACHE_VERSION_KEY = 'aisf-cache-version';
-const CACHE_VERSION = 6; // bump when callClaudeForContext / callClaudeForPosts prompt changes meaningfully
+const CACHE_VERSION = 9; // bump when callClaudeForContext / callClaudeForPosts prompt changes meaningfully
 const IMG_CACHE_KEY = 'aisf-img-cache';
 const IMG_CACHE_VERSION_KEY = 'aisf-img-cache-version';
-const IMG_CACHE_VERSION = 2; // bump when callClaudeForImage prompt changes meaningfully
+const IMG_CACHE_VERSION = 3; // bump when callClaudeForImage prompt changes meaningfully
 const HOST_SKIP_CACHE_KEY = 'aisf-host-skip-cache';
 const HOST_SKIP_CACHE_VERSION_KEY = 'aisf-host-skip-cache-version';
-const HOST_SKIP_CACHE_VERSION = 1; // bump when classifyHostNeedsImageScan prompt changes meaningfully
+const HOST_SKIP_CACHE_VERSION = 2; // bump when classifyHostNeedsImageScan prompt changes meaningfully
 const CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const IMG_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days for images
 const HOST_SKIP_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days for host-skip verdicts
@@ -24,6 +24,13 @@ const APPEAL_GRANT_KEY = 'aisf-appeal-grants';
 const APPEAL_GRANT_TTL_MS = 1000 * 60 * 60; // 1 hour bypass window after a granted appeal
 const PERSONAL_CONTEXT_MAX_CHARS = 2000;
 const DEBUG = true;
+const UNVERIFIED_DEFAULT_MIGRATION_KEY = 'aisf-image-unverified-default-reveal-v1';
+
+const NON_USER_POLICY_GUARD = [
+  'Important boundary: classify only against the user-provided rules.',
+  'Do not enforce or mention outside policies such as copyright, piracy, illegal streaming, legality, morality, platform terms, or website reputation unless a user rule explicitly names that topic.',
+  'For a porn/sexual-content rule, a movie or TV streaming site being unauthorized, pirated, or legally questionable is irrelevant. Block only when the page/query/post itself has sexual or pornographic evidence matching the rule.'
+].join('\n');
 
 (async () => {
   try {
@@ -56,6 +63,69 @@ const DEBUG = true;
       if (DEBUG) console.log('[AISF] host-skip cache invalidated to version', HOST_SKIP_CACHE_VERSION);
     }
   } catch (e) { console.warn('[AISF] host-skip cache version check failed:', e); }
+})();
+
+// One-time: unverified images used to default to hiding. That made protected movie
+// poster/CDN thumbnails disappear even when the image scanner had no NSFW verdict.
+(async () => {
+  try {
+    const { [UNVERIFIED_DEFAULT_MIGRATION_KEY]: done, imageUnverifiedAction } =
+      await chrome.storage.local.get([UNVERIFIED_DEFAULT_MIGRATION_KEY, 'imageUnverifiedAction']);
+    if (!done) {
+      if (!imageUnverifiedAction || imageUnverifiedAction === 'hide') {
+        await chrome.storage.local.set({ imageUnverifiedAction: 'reveal' });
+        if (DEBUG) console.log('[AISF] image unverified default changed to reveal');
+      }
+      await chrome.storage.local.set({ [UNVERIFIED_DEFAULT_MIGRATION_KEY]: true });
+    }
+  } catch (e) { console.warn('[AISF] image unverified migration failed:', e); }
+})();
+
+// One-time: the default Content strictness was raised from 'balanced' to 'strict'.
+// Bring installs still on the old default (or unset) up to the new default.
+const STRICTNESS_DEFAULT_MIGRATION_KEY = 'aisf-content-strictness-default-v2';
+(async () => {
+  try {
+    const { [STRICTNESS_DEFAULT_MIGRATION_KEY]: done, contentStrictness: cs } =
+      await chrome.storage.local.get([STRICTNESS_DEFAULT_MIGRATION_KEY, 'contentStrictness']);
+    if (!done) {
+      if (!cs || cs === 'balanced') {
+        await chrome.storage.local.set({ contentStrictness: 'strict' });
+        if (DEBUG) console.log('[AISF] content strictness default raised to strict');
+      }
+      await chrome.storage.local.set({ [STRICTNESS_DEFAULT_MIGRATION_KEY]: true });
+    }
+  } catch (e) { console.warn('[AISF] strictness default migration failed:', e); }
+})();
+
+// One-time: seed the strict anti-sexual-content block rule so it is on by default.
+// Text must stay in sync with STRICT_PRESET_RULES in options.js. Guarded by a key so
+// it runs exactly once — a user who later deletes the rule keeps it deleted.
+const STRICT_PRESET_RULE_TEXT =
+  'Anything someone would seek out, look for, or look at to find any sort of sexual pleasure or sexual stimulation';
+const STRICT_PRESET_SEED_MIGRATION_KEY = 'aisf-strict-sexual-preset-seed-v1';
+(async () => {
+  try {
+    const { [STRICT_PRESET_SEED_MIGRATION_KEY]: done } =
+      await chrome.storage.local.get(STRICT_PRESET_SEED_MIGRATION_KEY);
+    if (done) return;
+
+    const stored = await chrome.storage.local.get(['rules', 'blocklist']);
+    let rules = Array.isArray(stored.rules) ? stored.rules : null;
+    if (!rules && typeof stored.blocklist === 'string' && stored.blocklist.trim()) {
+      rules = stored.blocklist.split('\n').map((l) => l.trim()).filter(Boolean)
+        .map((text) => ({ id: rand(), text, mode: 'block' }));
+      await chrome.storage.local.remove('blocklist');
+    }
+    if (!rules) rules = [];
+
+    const present = rules.some((r) => r && (r.text || '').trim() === STRICT_PRESET_RULE_TEXT);
+    if (!present) {
+      rules.push({ id: rand(), text: STRICT_PRESET_RULE_TEXT, mode: 'block' });
+      if (DEBUG) console.log('[AISF] seeded strict anti-sexual-content block rule');
+    }
+    await chrome.storage.local.set({ rules, [STRICT_PRESET_SEED_MIGRATION_KEY]: true });
+  } catch (e) { console.warn('[AISF] strict preset seed migration failed:', e); }
 })();
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -130,7 +200,7 @@ async function checkContent(content, navigationUrl) {
   const failMode = stored.failMode || 'open';
   const useOnHotPaths = stored.personalContextOnHotPaths !== false; // default ON
   const personalContext = useOnHotPaths ? (stored.personalContext || '').trim() : '';
-  const contentStrictness = stored.contentStrictness || 'balanced';
+  const contentStrictness = stored.contentStrictness || 'strict';
 
   let rules = Array.isArray(stored.rules) ? stored.rules : null;
   if (!rules && typeof stored.blocklist === 'string' && stored.blocklist.trim()) {
@@ -246,6 +316,7 @@ async function callClaudeForContext(context, blockRules, allowRules, onlyAllowRu
     contextBlock,
     strictnessDirective,
     'You classify web content against the user\'s rules.',
+    NON_USER_POLICY_GUARD,
     '',
     'The user is in ALLOWLIST mode: by default, content is BLOCKED unless it clearly matches at least one ONLY-ALLOW rule.',
     '',
@@ -271,12 +342,15 @@ async function callClaudeForContext(context, blockRules, allowRules, onlyAllowRu
     '',
     'Be reasonable: educational/news content ABOUT a topic in an only-allow rule counts as a match. Do not invent matches — if it is truly unrelated, block it.',
     '',
+    'Judge only the page\'s subject matter against the rule text. Do not factor in whether the site appears to involve piracy, illegal streaming, copyright infringement, scams, or anything you personally consider harmful or unethical — none of that affects rule matching unless a rule explicitly names it. A page whose topic matches an only-allow rule is allowed even if the site itself is one you would personally avoid; the reason field must cite the actual rule fit, never the site\'s legality.',
+    '',
     'Respond with ONLY valid JSON, no fences or prose:',
     '{"blocked": true|false, "matchedRule": "exact rule text or null", "reason": "1-2 sentence substantive explanation, required"}'
   ].join('\n') : [
     contextBlock,
     strictnessDirective,
     'You classify web content against the user\'s rules.',
+    NON_USER_POLICY_GUARD,
     '',
     'BLOCK rules:',
     blockListText,
@@ -286,7 +360,9 @@ async function callClaudeForContext(context, blockRules, allowRules, onlyAllowRu
     '',
     'Process: allow > block > default-allow. Be reasonable; educational/recovery/news content ABOUT a blocked topic is usually allowed.',
     '',
-    'When a rule is phrased around the user\'s intent or impulse (e.g. "block things I\'d look up if I was X" or "block when I\'m tempted by Y"), treat search queries and pages that plausibly fulfill that intent as a match, even if the query itself is mild or euphemistic. The rule expresses a precommitment by the user against themselves — err toward honoring it on ambiguous cases. This overrides the educational/news carve-out only for intent-phrased rules.',
+    'Classify the page ONLY against the rules above — they are the sole authority. Do NOT block a page for any reason the user did not list. In particular, do not block it because the site appears to involve piracy, illegal streaming, copyright infringement, scams, malware, or because you personally consider it harmful, unsafe, sketchy, or unethical — those judgments are not yours to make here. If no block rule matches the page\'s actual subject matter, you MUST return blocked=false, even for a site you would personally avoid.',
+    '',
+    'When a rule describes content by the purpose it serves or the impulse it satisfies — whether phrased in the first person ("block things I\'d look up if I was X") or generally ("block anything someone would search for to find Y") — treat any search query or page that plausibly serves that purpose as a match, even when the wording is mild, euphemistic, or indirect. Such a rule is a precommitment by the user against their own weaker moments; on ambiguous or borderline cases, err toward honoring it. Apply it consistently: if one query matches the rule, near-synonyms and paraphrases of that query must receive the same verdict. This overrides the educational/news carve-out only for such intent-phrased rules.',
     '',
     'Respond with ONLY valid JSON, no fences or prose:',
     '{"blocked": true|false, "matchedRule": "exact rule text or null", "reason": "one-sentence explanation, required"}'
@@ -317,38 +393,64 @@ async function callClaudeForContext(context, blockRules, allowRules, onlyAllowRu
 async function classifyImage(imageUrl) {
   if (!imageUrl) return { nsfw: false, reason: 'no-url' };
 
-  const { apiKey = '', enableImageScanner = false } = await chrome.storage.local.get(['apiKey', 'enableImageScanner']);
-  if (!apiKey || !enableImageScanner) return { nsfw: false, reason: 'disabled' };
+  const { apiKey = '', enableImageScanner = true, imageStrictness } =
+    await chrome.storage.local.get(['apiKey', 'enableImageScanner', 'imageStrictness']);
+  if (!apiKey || enableImageScanner === false) return { nsfw: false, reason: 'disabled' };
 
-  const cacheKey = 'img:' + hashStr(imageUrl);
+  const strictness = IMAGE_STRICTNESS_DIRECTIVES[imageStrictness] !== undefined ? imageStrictness : 'strict';
+
+  // Strictness is folded into the cache key so flipping the setting re-classifies,
+  // the same way the Layer 0 key folds in the rules hash.
+  const cacheKey = 'img:' + strictness + ':' + hashStr(imageUrl);
   const cached = await getCached(IMG_CACHE_KEY, cacheKey, IMG_CACHE_TTL_MS);
   if (cached) return { ...cached, fromCache: true };
 
   try {
-    const result = await callClaudeForImage(imageUrl, apiKey);
+    const result = await callClaudeForImage(imageUrl, apiKey, strictness);
     await setCached(IMG_CACHE_KEY, cacheKey, result, MAX_IMG_CACHE);
     return result;
   } catch (e) {
     console.warn('[AISF] image classify failed:', e);
-    // Cache negative result briefly so we don't hammer
-    const fallback = { nsfw: false, error: String(e && e.message || e) };
-    return fallback;
+    const msg = String(e && e.message || e);
+    // A 400 from the API on an image-classify call means Claude could not fetch or
+    // decode the image URL (hotlink-protected CDNs, dead URLs), so let the content
+    // script apply the user's unverified-image fallback. 401/403/429/5xx/network
+    // errors are our infra, not the image, so leave failClosed unset (fail open).
+    // The catch path does not setCached, so failClosed verdicts retry next visit.
+    const failClosed = msg.includes('API 400');
+    return { nsfw: false, failClosed, error: msg };
   }
 }
 
-async function callClaudeForImage(imageUrl, apiKey) {
+// Builds the Anthropic image source block. http(s) URLs are fetched server-side;
+// data: URIs already carry the bytes inline, so we forward them as base64.
+function buildImageSource(imageUrl) {
+  if (imageUrl.startsWith('data:')) {
+    const m = /^data:(image\/[a-z+.-]+);base64,(.+)$/i.exec(imageUrl);
+    if (!m) throw new Error('unsupported data URI');
+    let mediaType = m[1].toLowerCase();
+    if (mediaType === 'image/jpg') mediaType = 'image/jpeg';
+    const SUPPORTED = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (!SUPPORTED.includes(mediaType)) throw new Error('unsupported media type: ' + mediaType);
+    return { type: 'base64', media_type: mediaType, data: m[2] };
+  }
+  return { type: 'url', url: imageUrl };
+}
+
+async function callClaudeForImage(imageUrl, apiKey, strictness) {
+  const strictnessDirective = IMAGE_STRICTNESS_DIRECTIVES[strictness] || '';
   const systemPrompt =
+    (strictnessDirective ? strictnessDirective + '\n\n' : '') +
     'You are a strict image classifier. The user does not want to see sexual content of ANY kind, including suggestive imagery — not just explicit pornography.\n\n' +
     'Categories (pick the most specific that applies):\n' +
     '- "porn": pornography, nudity, sex acts, exposed genitals, exposed breasts, masturbation, explicit sexual imagery\n' +
-    '- "suggestive": sexually suggestive but not explicit. Includes: lingerie/underwear photos, swimwear posed sexually (bikini shots framed for sex appeal, beach pin-ups), sheer or tight clothing emphasizing body, cleavage as the focal point, lower-body / butt close-ups, "thirst trap" framing, sexualized fitness/gym content, implied-nude posing, partial nudity, sexually suggestive cartoon/anime art, OnlyFans-style promotional images\n' +
+    '- "suggestive": sexually suggestive but not explicit. Includes: ANY person in a bikini, swimsuit, lingerie, or underwear (regardless of setting — beach, family, vacation, or casual all count); sheer or tight clothing emphasizing the body, cleavage as a focal point, lower-body / butt close-ups, "thirst trap" framing, sexualized fitness/gym content, implied-nude posing, partial nudity, sexually suggestive cartoon/anime art, OnlyFans-style promotional images\n' +
     '- "violence": graphic violence, gore, injury\n' +
-    '- "none": safe for general viewing — ordinary photos of people fully clothed without sexual framing, landscapes, objects, screenshots, diagrams, memes without sexual content, etc.\n\n' +
+    '- "none": safe for general viewing — people fully clothed in ordinary attire, landscapes, objects, screenshots, diagrams, memes without sexual content, etc.\n\n' +
     'Rules:\n' +
     '- Both "porn" AND "suggestive" return nsfw=true. Only "none" and "violence" return nsfw=false (violence is tracked separately but does not trigger NSFW for this user).\n' +
-    '- Be conservative on sexual content: if you are uncertain whether the framing is sexual, choose "suggestive" rather than "none".\n' +
-    '- Context matters: a person in a swimsuit at a clearly-non-sexualized family beach photo is "none"; the same swimsuit shot for sex appeal (posed, body emphasized, professional/glamour lighting) is "suggestive".\n' +
-    '- Athletes mid-competition in standard sport attire = "none". Posed bikini fitness modeling = "suggestive".\n\n' +
+    '- Be conservative on sexual content: if you are uncertain, choose "suggestive" rather than "none".\n' +
+    '- Do NOT exempt swimwear because of context: a bikini or swimsuit on a person is "suggestive" whether the photo is a posed glamour shot or a casual beach snapshot. The user wants all of it filtered.\n\n' +
     'Respond ONLY with JSON, no prose:\n' +
     '{"nsfw": true|false, "category": "porn"|"suggestive"|"violence"|"none", "confidence": 0.0-1.0}';
 
@@ -358,7 +460,7 @@ async function callClaudeForImage(imageUrl, apiKey) {
     messages: [{
       role: 'user',
       content: [
-        { type: 'image', source: { type: 'url', url: imageUrl } },
+        { type: 'image', source: buildImageSource(imageUrl) },
         { type: 'text', text: 'Classify this image.' }
       ]
     }],
@@ -385,8 +487,8 @@ async function classifyHostForImageScanner(hostname) {
   const host = (hostname || '').toLowerCase().trim();
   if (!host) return { skip: false, reason: 'no-host' };
 
-  const { apiKey = '', enableImageScanner = false } = await chrome.storage.local.get(['apiKey', 'enableImageScanner']);
-  if (!apiKey || !enableImageScanner) return { skip: false, reason: 'disabled' };
+  const { apiKey = '', enableImageScanner = true } = await chrome.storage.local.get(['apiKey', 'enableImageScanner']);
+  if (!apiKey || enableImageScanner === false) return { skip: false, reason: 'disabled' };
 
   const cached = await getCached(HOST_SKIP_CACHE_KEY, host, HOST_SKIP_CACHE_TTL_MS);
   if (cached) return { ...cached, fromCache: true };
@@ -414,6 +516,7 @@ async function callClaudeForHostSkip(hostname, apiKey) {
     '- Mainstream news (nytimes.com, bbc.com, cnn.com) — news photos are not sexual\n' +
     '- Shopping for non-apparel goods (amazon.com is borderline because of swimwear/lingerie listings — return skip=false to be safe)\n\n' +
     'Return skip=false (run the scanner) if:\n' +
+    '- The site is a search engine, image search, or result aggregator (google.com, bing.com, duckduckgo.com, yahoo.com, yandex.com, baidu.com, brave.com, ecosia.org). These surface arbitrary images from across the entire web, including NSFW thumbnails — NEVER skip them.\n' +
     '- The site hosts user-generated images or video (reddit.com, twitter.com/x.com, instagram.com, tiktok.com, tumblr.com, imgur.com, pinterest.com, 4chan.org, discord.com)\n' +
     '- The site is an adult site, image board, dating app, or known to mix adult content\n' +
     '- The site sells apparel, swimwear, lingerie, or fitness gear (product photos can be suggestive)\n' +
@@ -461,7 +564,7 @@ async function classifyPosts(posts, hostname) {
 
   const useOnHotPaths = stored.personalContextOnHotPaths !== false; // default ON
   const personalContext = useOnHotPaths ? (stored.personalContext || '').trim() : '';
-  const contentStrictness = stored.contentStrictness || 'balanced';
+  const contentStrictness = stored.contentStrictness || 'strict';
 
   try {
     const verdicts = await callClaudeForPosts(posts, blockRules, allowRules, onlyAllowRules, stored.apiKey, personalContext, contentStrictness);
@@ -490,6 +593,7 @@ async function callClaudeForPosts(posts, blockRules, allowRules, onlyAllowRules,
     contextBlock,
     strictnessDirective,
     'You classify a list of social media / feed posts against the user\'s rules.',
+    NON_USER_POLICY_GUARD,
     '',
     'The user is in ALLOWLIST mode: by default, each post is BLOCKED unless it clearly matches at least one ONLY-ALLOW rule.',
     '',
@@ -516,6 +620,7 @@ async function callClaudeForPosts(posts, blockRules, allowRules, onlyAllowRules,
     contextBlock,
     strictnessDirective,
     'You classify a list of social media / feed posts against the user\'s rules.',
+    NON_USER_POLICY_GUARD,
     '',
     'BLOCK rules:',
     blockListText,
@@ -526,6 +631,7 @@ async function callClaudeForPosts(posts, blockRules, allowRules, onlyAllowRules,
     'For each post, decide if it should be blocked. Allow > block > default-allow.',
     'Be reasonable. Posts ABOUT a blocked topic (recovery, news, educational) are usually allowed.',
     'Default to allowing posts that are clearly off-topic from any rule.',
+    'When a rule describes content by the purpose it serves or the impulse it satisfies (whether phrased "things I\'d look up if I was X" or "anything someone would seek out for Y"), treat any post that plausibly serves that purpose as a match, even when the wording is mild or euphemistic, and apply it consistently across near-synonyms. Such a rule is a precommitment — err toward honoring it on borderline cases.',
     '',
     'Respond with ONLY a valid JSON array, one object per input post in the same order:',
     '[{"id": <post id>, "blocked": true|false, "matchedRule": "rule text or null", "reason": "brief one-line reason"}, ...]'
@@ -612,6 +718,7 @@ async function callClaudeForAppeal({ apiKey, originalUrl, query, matchedRule, or
     '- False positive: the user explains the content is genuinely different from what the classifier thought (e.g. "this is a documentary ABOUT X, not X itself")',
     '- Legitimate scoped exception that fits the SPIRIT of the rule: a specific work/research/safety need that the rule clearly was not aimed at (e.g. journalist researching the topic, clinician looking up a medication, parent verifying something for a child)',
     '- Clear classifier error: the matched rule plainly does not apply to what the page actually is',
+    '- Outside-policy error: the block was based on piracy, copyright, illegal streaming, legality, platform terms, or website reputation, and the matched user rule did not explicitly name that topic',
     '',
     'UPHOLD the block (overturned=false) when:',
     '- The appeal is "I want to see it", "just this once", "I changed my mind", "the rule is too strict", or pure frustration without substance',
@@ -927,6 +1034,14 @@ const APPEAL_STRICTNESS_DIRECTIVES = {
   'lenient':      'APPEAL STRICTNESS: lenient. Favor overturning. A plausible reason from the user should usually be enough.',
   'strict':       'APPEAL STRICTNESS: strict. Default to upholding. Overturn only when the appeal clearly demonstrates a false positive or a legitimate scoped exception.',
   'very-strict':  'APPEAL STRICTNESS: very strict. Overturn only on obvious classifier errors. Treat all other appeals as the precommitted-self circumventing itself.'
+};
+
+// Layer 1 image-scanner strictness tiers. Prepended to the callClaudeForImage prompt.
+// 'strict' is the default and matches the base prompt as-is (no extra directive).
+const IMAGE_STRICTNESS_DIRECTIVES = {
+  'standard': 'STRICTNESS: standard. Apply context — a swimsuit in a clearly non-sexualized setting (a family beach scene, children, or athletes mid-competition in standard sport attire) is "none"; only posed / sex-appeal framing is "suggestive". This overrides the "do NOT exempt swimwear" rule below.',
+  'strict':   '',
+  'maximum':  'STRICTNESS: maximum. In addition to the rules below, also treat bare midriffs, visible cleavage as a focal point, shirtless people, very short shorts, and skin-revealing activewear or gym wear as "suggestive". Block on essentially any notable skin exposure.'
 };
 
 function buildStrictnessDirective(tier, kind) {

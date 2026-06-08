@@ -5,8 +5,8 @@ let rules = [];
 const SETTINGS_STORAGE_KEYS = [
   'apiKey', 'rules', 'failMode', 'allowDomains', 'imageScannerExcludeDomains',
   'enableSiteFilters', 'enableImageScanner', 'enablePostScanner',
-  'intelligentImageScanner', 'imageMinSize', 'postAction',
-  'personalContext', 'personalContextOnHotPaths',
+  'intelligentImageScanner', 'imageMinSize', 'imageStrictness', 'imageUnverifiedAction',
+  'postAction', 'personalContext', 'personalContextOnHotPaths',
   'contentStrictness', 'appealStrictness'
 ];
 
@@ -14,6 +14,19 @@ const STRICTNESS_ORDER = ['very-lenient', 'lenient', 'balanced', 'strict', 'very
 function strictnessRank(v) {
   const i = STRICTNESS_ORDER.indexOf(v);
   return i === -1 ? STRICTNESS_ORDER.indexOf('balanced') : i;
+}
+
+const IMAGE_STRICTNESS_ORDER = ['standard', 'strict', 'maximum'];
+function imageStrictnessRank(v) {
+  const i = IMAGE_STRICTNESS_ORDER.indexOf(v);
+  return i === -1 ? IMAGE_STRICTNESS_ORDER.indexOf('strict') : i;
+}
+
+// Un-verifiable-image fallback, ordered weakest -> strongest.
+const UNVERIFIED_ORDER = ['reveal', 'blur', 'hide'];
+function unverifiedRank(v) {
+  const i = UNVERIFIED_ORDER.indexOf(v);
+  return i === -1 ? UNVERIFIED_ORDER.indexOf('reveal') : i;
 }
 
 let pendingDiff = null;
@@ -82,10 +95,7 @@ function renderScopeSummary() {
 }
 
 const STRICT_PRESET_RULES = [
-  'Sexually explicit content: pornography, nudity, sex acts, exposed genitals, exposed breasts, explicit sexual imagery or descriptions',
-  'Sexually suggestive content: lingerie/underwear photoshoots, swimwear in sexualized poses, thirst-trap content, OnlyFans/Patreon-style adult creators, cleavage- or body-emphasis framing, sexualized fitness/gym content',
-  'Dating, hookup, and sexual-encounter content: Tinder/Bumble/Grindr discussion, hookup advice, sexting tips, NSFW dating subreddits',
-  'Romance, erotica, and NSFW fiction: smut, erotica subreddits, sexual fanfiction, NSFW art, fan service'
+  'Anything someone would seek out, look for, or look at to find any sort of sexual pleasure or sexual stimulation'
 ];
 
 async function load() {
@@ -94,6 +104,7 @@ async function load() {
     'enableSiteFilters', 'enableImageScanner', 'enablePostScanner',
     'imageMinSize', 'postAction', 'imageScannerExcludeDomains', 'personalContext',
     'personalContextOnHotPaths', 'intelligentImageScanner',
+    'imageStrictness', 'imageUnverifiedAction',
     'contentStrictness', 'appealStrictness'
   ]);
 
@@ -101,17 +112,19 @@ async function load() {
   $('failMode').value = stored.failMode || 'open';
   $('allowDomains').value = Array.isArray(stored.allowDomains) ? stored.allowDomains.join('\n') : '';
   $('personalContext').value = stored.personalContext || '';
-  $('contentStrictness').value = stored.contentStrictness || 'balanced';
+  $('contentStrictness').value = stored.contentStrictness || 'strict';
   $('appealStrictness').value = stored.appealStrictness || 'strict';
   $('imageScannerExcludeDomains').value = Array.isArray(stored.imageScannerExcludeDomains) ? stored.imageScannerExcludeDomains.join('\n') : '';
 
   $('enableSiteFilters').checked = stored.enableSiteFilters !== false; // default ON
-  $('enableImageScanner').checked = stored.enableImageScanner === true;
+  $('enableImageScanner').checked = stored.enableImageScanner !== false; // default ON
   $('enablePostScanner').checked = stored.enablePostScanner === true;
   $('intelligentImageScanner').checked = stored.intelligentImageScanner !== false; // default ON
   $('personalContextOnHotPaths').checked = stored.personalContextOnHotPaths !== false; // default ON
 
   $('imageMinSize').value = stored.imageMinSize || 80;
+  $('imageStrictness').value = stored.imageStrictness || 'strict';
+  $('imageUnverifiedAction').value = stored.imageUnverifiedAction || 'reveal';
   $('postAction').value = stored.postAction || 'hide';
 
   // Rules + migration
@@ -410,6 +423,8 @@ function buildNewSettings() {
     enablePostScanner: $('enablePostScanner').checked,
     intelligentImageScanner: $('intelligentImageScanner').checked,
     imageMinSize: Math.max(50, Math.min(500, parseInt($('imageMinSize').value, 10) || 80)),
+    imageStrictness: $('imageStrictness').value,
+    imageUnverifiedAction: $('imageUnverifiedAction').value,
     postAction: $('postAction').value,
     personalContext: $('personalContext').value.trim(),
     personalContextOnHotPaths: $('personalContextOnHotPaths').checked,
@@ -433,14 +448,16 @@ function normalizeStoredSettings(stored) {
     allowDomains: Array.isArray(s.allowDomains) ? s.allowDomains : [],
     imageScannerExcludeDomains: Array.isArray(s.imageScannerExcludeDomains) ? s.imageScannerExcludeDomains : [],
     enableSiteFilters: s.enableSiteFilters !== false,
-    enableImageScanner: s.enableImageScanner === true,
+    enableImageScanner: s.enableImageScanner !== false,
     enablePostScanner: s.enablePostScanner === true,
     intelligentImageScanner: s.intelligentImageScanner !== false,
     imageMinSize: Math.max(50, Math.min(500, parseInt(s.imageMinSize, 10) || 80)),
+    imageStrictness: s.imageStrictness || 'strict',
+    imageUnverifiedAction: s.imageUnverifiedAction || 'reveal',
     postAction: s.postAction || 'hide',
     personalContext: (s.personalContext || '').trim(),
     personalContextOnHotPaths: s.personalContextOnHotPaths !== false,
-    contentStrictness: s.contentStrictness || 'balanced',
+    contentStrictness: s.contentStrictness || 'strict',
     appealStrictness: s.appealStrictness || 'strict'
   };
 }
@@ -493,7 +510,8 @@ function computeDiff(current, next) {
   const compareKeys = [
     'apiKey', 'failMode', 'allowDomains', 'imageScannerExcludeDomains',
     'enableSiteFilters', 'enableImageScanner', 'enablePostScanner',
-    'intelligentImageScanner', 'imageMinSize', 'postAction', 'personalContextOnHotPaths',
+    'intelligentImageScanner', 'imageMinSize', 'imageStrictness', 'imageUnverifiedAction',
+    'postAction', 'personalContextOnHotPaths',
     'contentStrictness', 'appealStrictness'
   ];
   for (const key of compareKeys) {
@@ -609,6 +627,14 @@ function isPurelyStrengthening(diff) {
       if (strictnessRank(n) < strictnessRank(o)) return false;
       continue;
     }
+    if (key === 'imageStrictness') {
+      if (imageStrictnessRank(n) < imageStrictnessRank(o)) return false;
+      continue;
+    }
+    if (key === 'imageUnverifiedAction') {
+      if (unverifiedRank(n) < unverifiedRank(o)) return false;
+      continue;
+    }
     return false;
   }
   return true;
@@ -626,6 +652,8 @@ async function commitSave(next) {
     enablePostScanner: next.enablePostScanner,
     intelligentImageScanner: next.intelligentImageScanner,
     imageMinSize: next.imageMinSize,
+    imageStrictness: next.imageStrictness,
+    imageUnverifiedAction: next.imageUnverifiedAction,
     postAction: next.postAction,
     personalContext: next.personalContext,
     personalContextOnHotPaths: next.personalContextOnHotPaths,

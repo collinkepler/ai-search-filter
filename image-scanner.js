@@ -3,24 +3,40 @@
 //   1. Blur every observable image preemptively (before classification).
 //   2. Send the URL to the service worker when it intersects the viewport.
 //   3. On nsfw=true → hide entirely. On nsfw=false → clear the blur.
-//   4. On API error / timeout → leave the blur in place (fail-closed). An 8s
-//      ceiling clears it if the classifier never responds, so a broken pipeline
-//      doesn't permanently blur every image on the page.
+//   4. On unverified image URLs, apply the user's fallback (default reveal).
+//      An 8s ceiling clears the blur if the classifier never responds, so a
+//      broken pipeline doesn't permanently blur every image on the page.
+//   5. Auto-detect un-scannable sites: if every observed image fails to fetch
+//      (hotlink-protected CDNs — common on streaming/piracy sites), the scanner
+//      reveals all of them and stands down. It cannot classify anything there,
+//      so hiding/blurring every image is pure cost with zero protection.
 
 (function () {
   const PENDING_TIMEOUT_MS = 8000;
   const BLUR_FILTER = 'blur(40px)';
+  // How many images must fail-closed (with zero successful classifications)
+  // before we conclude the whole site is un-fetchable and stop hiding images.
+  const UNSCANNABLE_THRESHOLD = 5;
 
   class AISFImageScanner {
     constructor(options) {
       this.options = Object.assign({
         minSize: 80,
-        rootMargin: '200px'
+        rootMargin: '200px',
+        unverifiedAction: 'reveal' // what to do when the classifier can't fetch an image
       }, options || {});
 
       this.scanned = new WeakSet();
       this.scannedUrls = new Set();
       this.disabled = false;
+
+      // Auto-detect un-scannable sites. Once UNSCANNABLE_THRESHOLD images
+      // fail-closed with zero successful classifications, the whole site is
+      // treated as un-fetchable: everything is revealed and the scanner stops.
+      this.failClosedCount = 0;
+      this.verifiedCount = 0;
+      this.unscannable = false;
+
       this.start();
     }
 
@@ -42,6 +58,35 @@
           attributeFilter: ['src', 'srcset', 'poster']
         });
       }
+
+      this.scheduleResweeps();
+    }
+
+    scheduleResweeps() {
+      // observeAll() runs once at start and the MutationObserver catches everything
+      // added afterward — but a page that renders its first batch of images around
+      // the time the scanner is constructed (search-result pages: the scanner only
+      // starts after the Layer 0 check resolves; and prerendered/preloaded pages)
+      // can land that batch in a window neither path covers. Re-sweep the DOM a few
+      // times so every image present gets observed. observe() is idempotent, so
+      // re-sweeps just early-return for already-seen elements.
+      let count = 0;
+      this.resweepTimer = setInterval(() => {
+        if (this.disabled || count++ >= 30) {
+          clearInterval(this.resweepTimer);
+          this.resweepTimer = null;
+          return;
+        }
+        this.observeAll();
+      }, 400);
+
+      // A preloaded/prerendered page runs the scanner while hidden; re-sweep when it
+      // becomes visible (also covers tab-restore and bfcache page-show).
+      this.onVisible = () => {
+        if (!this.disabled && document.visibilityState === 'visible') this.observeAll();
+      };
+      document.addEventListener('visibilitychange', this.onVisible);
+      window.addEventListener('pageshow', this.onVisible);
     }
 
     observeAll() {
@@ -68,7 +113,8 @@
     }
 
     applyPendingBlur(el) {
-      if (el.dataset.aisfPending || el.dataset.aisfFlagged || el.dataset.aisfCleared) return;
+      if (this.unscannable) return;
+      if (el.dataset.aisfPending || el.dataset.aisfFlagged || el.dataset.aisfCleared || el.dataset.aisfUnverified) return;
       el.dataset.aisfPending = '1';
       el.dataset.aisfPrevFilter = el.style.filter || '';
       el.style.filter = BLUR_FILTER;
@@ -101,7 +147,9 @@
           // the addedNodes branch if/when they enter the DOM.
           if (!this.scanned.has(el)) continue;
           const newUrl = el.tagName === 'IMG' ? (el.currentSrc || el.src) : el.poster;
-          if (!newUrl || newUrl.startsWith('data:') || newUrl.startsWith('blob:')) continue;
+          // blob: URLs can't be read by the service worker; data: URIs carry the bytes
+          // inline (Google swaps real thumbnails in as data: URIs after page load).
+          if (!newUrl || newUrl.startsWith('blob:')) continue;
           this.reCheck(el);
           continue;
         }
@@ -130,6 +178,7 @@
       }
       delete el.dataset.aisfPending;
       delete el.dataset.aisfCleared;
+      delete el.dataset.aisfUnverified;
       delete el.dataset.aisfPrevFilter;
       el.style.filter = '';
 
@@ -152,8 +201,10 @@
         url = el.poster;
       }
 
-      // No usable URL — nothing to classify; clear the blur rather than freezing it
-      if (!url || url.startsWith('data:') || url.startsWith('blob:')) {
+      // No usable URL — clear the blur rather than freezing it. blob: URLs are
+      // scoped to the page context and can't be read by the service worker;
+      // data: URIs carry the image bytes inline and CAN be classified.
+      if (!url || url.startsWith('blob:')) {
         this.clearPendingBlur(el);
         return;
       }
@@ -182,12 +233,82 @@
             return;
           }
           if (response.nsfw) {
+            this.verifiedCount++;
             this.hideElement(el, response);
+          } else if (response.failClosed) {
+            this.failClosedCount++;
+            if (!this.unscannable && this.verifiedCount === 0 &&
+                this.failClosedCount >= UNSCANNABLE_THRESHOLD) {
+              this.markUnscannable();
+            }
+            this.applyUnverified(el);
           } else {
+            this.verifiedCount++;
             this.clearPendingBlur(el);
           }
         }
       );
+    }
+
+    applyUnverified(el) {
+      // The classifier could not fetch/decode this image (hotlink-protected CDN,
+      // dead URL). If the whole site has proven un-fetchable, hiding/blurring is
+      // pure cost with zero protection — just reveal. Otherwise apply the user's
+      // chosen fallback for un-verifiable images.
+      if (this.unscannable) {
+        this.clearPendingBlur(el);
+        return;
+      }
+      const action = this.options.unverifiedAction;
+      if (action === 'reveal') {
+        this.clearPendingBlur(el);
+      } else if (action === 'blur') {
+        this.keepBlurred(el);
+      } else {
+        this.hideElement(el, { category: 'unverified' });
+      }
+    }
+
+    markUnscannable() {
+      // Every observed image on this host failed to fetch — the scanner cannot
+      // protect against anything here. Reveal what we already hid/blurred as
+      // "unverified", then stop observing so later images aren't blurred or sent
+      // for classification (every call would just fail-closed again).
+      this.unscannable = true;
+      console.log('[AISF] image scanner: every image on ' + location.hostname +
+        ' is un-fetchable (hotlink-protected) — revealing thumbnails and standing down');
+      this.restoreUnverifiedElements();
+      this.stop();
+    }
+
+    restoreUnverifiedElements() {
+      document.querySelectorAll('img, video').forEach((el) => {
+        if (el.dataset.aisfFlagged && el.dataset.aisfReason === 'unverified') {
+          // Hidden by applyUnverified — un-hide. NSFW-flagged elements carry a
+          // different aisfReason and are deliberately left untouched.
+          delete el.dataset.aisfFlagged;
+          delete el.dataset.aisfReason;
+          el.style.visibility = '';
+          el.style.filter = '';
+          el.dataset.aisfCleared = '1';
+        } else if (el.dataset.aisfUnverified) {
+          // Permanently blurred by applyUnverified — clear the blur.
+          delete el.dataset.aisfUnverified;
+          el.style.filter = '';
+          el.dataset.aisfCleared = '1';
+        } else if (el.dataset.aisfPending) {
+          this.clearPendingBlur(el);
+        }
+      });
+    }
+
+    keepBlurred(el) {
+      // Convert the transient pending blur into a permanent one.
+      if (el.dataset.aisfFlagged) return;
+      delete el.dataset.aisfPending;
+      delete el.dataset.aisfPrevFilter;
+      el.dataset.aisfUnverified = '1';
+      el.style.filter = BLUR_FILTER;
     }
 
     hideElement(el, verdict) {
@@ -203,6 +324,12 @@
     stop() {
       if (this.observer) this.observer.disconnect();
       if (this.mutationObserver) this.mutationObserver.disconnect();
+      if (this.resweepTimer) { clearInterval(this.resweepTimer); this.resweepTimer = null; }
+      if (this.onVisible) {
+        document.removeEventListener('visibilitychange', this.onVisible);
+        window.removeEventListener('pageshow', this.onVisible);
+        this.onVisible = null;
+      }
     }
 
     disable() {

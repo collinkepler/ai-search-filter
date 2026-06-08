@@ -434,7 +434,7 @@
     <div id="rules"></div>
     <div style="display: flex; gap: 8px; margin-top: 12px;">
       <button class="add-btn" id="addRule" style="margin-top: 0;">+ Add rule</button>
-      <button class="add-btn" id="addStrictPreset" style="margin-top: 0; flex: 0 0 auto; padding: 10px 16px;" title="Append a set of opinionated block rules covering explicit, suggestive, dating, and erotica content. Editable after.">+ Strict anti-sexual-content preset</button>
+      <button class="add-btn" id="addStrictPreset" style="margin-top: 0; flex: 0 0 auto; padding: 10px 16px;" title="Append one broad block rule covering anything sought out for sexual pleasure or stimulation. Editable after.">+ Strict anti-sexual-content preset</button>
     </div>
   </section>
 
@@ -467,6 +467,20 @@
       <div class="layer-controls">
         <label>Min image size (px):
           <input type="number" id="imageMinSize" min="50" max="500" step="10" value="80">
+        </label>
+        <label>Image strictness:
+          <select id="imageStrictness">
+            <option value="standard">Standard &mdash; context-aware, allows family/beach photos</option>
+            <option value="strict" selected>Strict &mdash; block all bikinis, swimwear, lingerie</option>
+            <option value="maximum">Maximum &mdash; also block cleavage, shirtless, midriff, activewear</option>
+          </select>
+        </label>
+        <label>If an image can't be verified:
+          <select id="imageUnverifiedAction">
+            <option value="reveal" selected>Show it (recommended)</option>
+            <option value="blur">Keep it blurred</option>
+            <option value="hide">Hide it</option>
+          </select>
         </label>
       </div>
       <div style="margin-top: 12px;">
@@ -521,8 +535,8 @@
       <select id="contentStrictness">
         <option value="very-lenient">Very lenient &mdash; block only on obvious matches</option>
         <option value="lenient">Lenient &mdash; favor allowing on ambiguity</option>
-        <option value="balanced" selected>Balanced &mdash; current behavior</option>
-        <option value="strict">Strict &mdash; favor blocking on ambiguity</option>
+        <option value="balanced">Balanced</option>
+        <option value="strict" selected>Strict &mdash; favor blocking on ambiguity (default)</option>
         <option value="very-strict">Very strict &mdash; block on any plausible match</option>
       </select>
     </label>

@@ -11,11 +11,26 @@
 
   init();
 
-  window.addEventListener('yt-navigate-start', () => pauseMedia());
-  window.addEventListener('yt-navigate-finish', init);
-  window.addEventListener('popstate', init);
+  // SPA navigation detection. The page changes its URL via history.pushState /
+  // replaceState without a full reload (YouTube Music switching tracks, etc.).
+  // A content script lives in the isolated world and can't hook the page's
+  // history methods, so we re-check on every URL change via events + a polling
+  // fallback. Each SPA re-check is "soft": it pauses audio but keeps the UI
+  // visible (no full-page hide) so a music app doesn't blank on every track.
+  let __aisfLastUrl = location.href;
+  function onSpaNav() {
+    if (location.href === __aisfLastUrl) return;
+    __aisfLastUrl = location.href;
+    init({ soft: true });
+  }
 
-  async function init() {
+  window.addEventListener('yt-navigate-start', () => startMediaGuard()); // silence ASAP
+  window.addEventListener('yt-navigate-finish', onSpaNav);
+  window.addEventListener('popstate', onSpaNav);
+  window.addEventListener('hashchange', onSpaNav);
+  setInterval(onSpaNav, 400); // catches pushState/replaceState the isolated world can't hook
+
+  async function init({ soft = false } = {}) {
     if (location.protocol === 'chrome-extension:') {
       reveal();
       return;
@@ -35,7 +50,7 @@
     if (!content) {
       reveal();
       lastCheckedUrl = null;
-      initSubLayers(settings);
+      initSubLayers(settings, null);
       return;
     }
 
@@ -45,9 +60,8 @@
     const checkId = ++currentCheckId;
     const urlAtStart = location.href;
 
-    pauseMedia();
-    document.documentElement.classList.add('aisf-checking');
-    injectOverlay(content);
+    startMediaGuard();
+    if (!soft) document.documentElement.classList.add('aisf-checking');
 
     let settled = false;
     const finish = (response) => {
@@ -63,7 +77,7 @@
       if (chrome.runtime.lastError || !response) {
         console.warn('[AISF] message error:', chrome.runtime.lastError);
         reveal();
-        initSubLayers(settings);
+        initSubLayers(settings, content);
         return;
       }
 
@@ -81,7 +95,7 @@
         window.location.replace(target);
       } else {
         reveal();
-        initSubLayers(settings);
+        initSubLayers(settings, content);
       }
     };
 
@@ -97,20 +111,26 @@
     chrome.runtime.sendMessage({ type: 'check', content, navigationUrl: urlAtStart }, finish);
   }
 
-  function initSubLayers(settings) {
+  function initSubLayers(settings, content) {
     // Layer 1: image scanner
     const imageExcluded = isAllowedDomain(location.hostname, settings.imageScannerExcludeDomains);
-    if (settings.enableImageScanner && !imageExcluded && typeof window.AISFImageScanner !== 'undefined') {
+    if (settings.enableImageScanner !== false && !imageExcluded && typeof window.AISFImageScanner !== 'undefined') {
       if (!window.__aisfImageScanner) {
         const scanner = new window.AISFImageScanner({
-          minSize: settings.imageMinSize || 80
+          minSize: settings.imageMinSize || 80,
+          unverifiedAction: settings.imageUnverifiedAction || 'reveal'
         });
         window.__aisfImageScanner = scanner;
+
+        // Search-result pages surface arbitrary web images (Google/Bing Images,
+        // etc.) — always scan them, skipping the per-host "is this worth it?"
+        // check that would otherwise let a search engine be classified as safe.
+        const isSearch = !!(content && content.type === 'search');
 
         // Smart activation: ask the service worker once whether this host is
         // even a candidate for NSFW imagery. If not, tear down the scanner.
         // Default true; existing users who never set the key get smart skipping.
-        if (settings.intelligentImageScanner !== false) {
+        if (!isSearch && settings.intelligentImageScanner !== false) {
           chrome.runtime.sendMessage(
             { type: 'classifyHostForImageScanner', hostname: location.hostname },
             (resp) => {
@@ -146,7 +166,8 @@
       'postAction',
       'failMode',
       'imageScannerExcludeDomains',
-      'intelligentImageScanner'
+      'intelligentImageScanner',
+      'imageUnverifiedAction'
     ]);
     return settingsCache;
   }
@@ -264,38 +285,37 @@
     return '';
   }
 
-  function injectOverlay(content) {
-    const tryInject = () => {
-      const parent = document.body || document.documentElement;
-      if (!parent) { requestAnimationFrame(tryInject); return; }
-      if (document.getElementById('aisf-overlay')) return;
-
-      let label;
-      if (content.type === 'youtube_video') label = 'Checking this video…';
-      else if (content.type === 'search') label = 'Checking your search…';
-      else label = 'Checking ' + content.hostname + '…';
-
-      const div = document.createElement('div');
-      div.id = 'aisf-overlay';
-      div.innerHTML =
-        '<div class="aisf-card">' +
-          '<div class="aisf-spinner"></div>' +
-          '<div class="aisf-text">' + escapeHtml(label) + '</div>' +
-        '</div>';
-      parent.appendChild(div);
+  // Media guard: keeps audio/video paused for the duration of a pending check.
+  // pauseMedia() alone only catches elements playing at call time; an SPA player
+  // (YouTube Music) calls play() again on the same element mid-check, leaking
+  // audio until the block navigation fires. The capture-phase 'play' listener on
+  // document re-pauses anything that starts — including elements created later.
+  let __aisfMediaGuard = null;
+  let __aisfGuardSafety = null;
+  function startMediaGuard() {
+    pauseMedia();
+    if (__aisfMediaGuard) return;
+    const onPlay = (e) => {
+      const m = e.target;
+      if (m && (m.tagName === 'VIDEO' || m.tagName === 'AUDIO')) {
+        try { m.pause(); m.muted = true; m.dataset.aisfPaused = '1'; m.dataset.aisfMuted = '1'; } catch (e) {}
+      }
     };
-    tryInject();
+    document.addEventListener('play', onPlay, true);
+    __aisfMediaGuard = () => document.removeEventListener('play', onPlay, true);
+    // Never leave audio permanently muted if no verdict ever settles.
+    __aisfGuardSafety = setTimeout(stopMediaGuard, 12000);
   }
-
-  function escapeHtml(s) {
-    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  function stopMediaGuard() {
+    if (__aisfGuardSafety) { clearTimeout(__aisfGuardSafety); __aisfGuardSafety = null; }
+    if (__aisfMediaGuard) { __aisfMediaGuard(); __aisfMediaGuard = null; }
   }
 
   function pauseMedia() {
     try {
       document.querySelectorAll('video, audio').forEach((m) => {
         try {
-          if (!m.paused) m.pause();
+          if (!m.paused) { m.pause(); m.dataset.aisfPaused = '1'; }
           if (!m.muted) { m.muted = true; m.dataset.aisfMuted = '1'; }
         } catch (e) {}
       });
@@ -307,13 +327,21 @@
       document.querySelectorAll('[data-aisf-muted]').forEach((m) => {
         try { m.muted = false; delete m.dataset.aisfMuted; } catch (e) {}
       });
+      document.querySelectorAll('[data-aisf-paused]').forEach((m) => {
+        try {
+          delete m.dataset.aisfPaused;
+          const p = m.play();
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+        } catch (e) {}
+      });
     } catch (e) {}
   }
 
   function reveal() {
+    stopMediaGuard(); // remove the play-capture listener before resuming...
     document.documentElement.classList.remove('aisf-checking');
     const overlay = document.getElementById('aisf-overlay');
     if (overlay) overlay.remove();
-    resumeMedia();
+    resumeMedia();    // ...so resume's play() isn't immediately re-paused by the guard
   }
 })();
