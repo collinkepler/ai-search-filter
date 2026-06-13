@@ -48,9 +48,9 @@
 
     const content = await extractContent();
     if (!content) {
+      initSubLayers(settings, null);
       reveal();
       lastCheckedUrl = null;
-      initSubLayers(settings, null);
       return;
     }
 
@@ -76,8 +76,8 @@
 
       if (chrome.runtime.lastError || !response) {
         console.warn('[AISF] message error:', chrome.runtime.lastError);
-        reveal();
         initSubLayers(settings, content);
+        reveal();
         return;
       }
 
@@ -90,12 +90,13 @@
         if (response.error) params.set('error', response.error);
         if (response.fromCache) params.set('fromCache', '1');
         if (response.rawResponse) params.set('raw', response.rawResponse);
+        if (response.cacheKey) params.set('cacheKey', response.cacheKey);
 
         const target = chrome.runtime.getURL('block.html') + '?' + params.toString();
         window.location.replace(target);
       } else {
-        reveal();
         initSubLayers(settings, content);
+        reveal();
       }
     };
 
@@ -154,6 +155,38 @@
         });
       }
     }
+
+    // Usage limits: time-based heartbeat
+    // Runs only when there are enabled time-limit rules matching this page.
+    // Only counts time while the tab is visible (document.visibilityState).
+    (async () => {
+      const { usageLimits = [] } = await chrome.storage.local.get('usageLimits');
+      const url = location.href;
+      const matching = (usageLimits || []).filter(
+        (r) => r.enabled && r.type === 'time' && matchesPatternClient(r.pattern, url)
+      );
+      if (!matching.length) return;
+
+      const ruleIds = matching.map((r) => r.id);
+      const INTERVAL_MS = 30000;
+
+      const hb = setInterval(() => {
+        if (document.visibilityState !== 'visible') return;
+        chrome.runtime.sendMessage({ type: 'time-heartbeat', ruleIds, intervalMs: INTERVAL_MS }, (res) => {
+          if (chrome.runtime.lastError || !res) return;
+          if (!res.exceededRuleIds || !res.exceededRuleIds.length) return;
+          clearInterval(hb);
+          const rule = matching.find((r) => res.exceededRuleIds.includes(r.id));
+          const params = new URLSearchParams();
+          params.set('q', document.title || location.hostname);
+          params.set('originalUrl', location.href);
+          params.set('rule', `Usage limit: ${rule ? rule.label : 'Time limit'}`);
+          const resets = rule && rule.period === 'week' ? 'next Monday' : 'at midnight';
+          params.set('reason', `Time limit reached. Resets ${resets}.`);
+          window.location.replace(chrome.runtime.getURL('block.html') + '?' + params.toString());
+        });
+      }, INTERVAL_MS);
+    })();
   }
 
   async function getSettings() {
@@ -184,6 +217,23 @@
       if (!d.includes('.') && h.split('.').includes(d)) return true;
     }
     return false;
+  }
+
+  function matchesPatternClient(pattern, url) {
+    try {
+      const u = new URL(url.includes('://') ? url : 'https://' + url);
+      const stripped = pattern.replace(/^https?:\/\//, '');
+      const slashIdx = stripped.indexOf('/');
+      const hostPat = slashIdx === -1 ? stripped : stripped.slice(0, slashIdx);
+      const pathPat = slashIdx === -1 ? '/*' : stripped.slice(slashIdx);
+      const hostMatch = hostPat.startsWith('*.')
+        ? (u.hostname === hostPat.slice(2) || u.hostname.endsWith('.' + hostPat.slice(2)))
+        : (u.hostname === hostPat || u.hostname === 'www.' + hostPat || 'www.' + u.hostname === hostPat);
+      if (!hostMatch) return false;
+      if (pathPat === '/*' || pathPat === '*' || pathPat === '/') return true;
+      if (pathPat.endsWith('*')) return u.pathname.startsWith(pathPat.slice(0, -1));
+      return u.pathname === pathPat;
+    } catch { return false; }
   }
 
   const SEARCH_PARAMS_STRONG = ['search_query', 'query', 'q', 'k', 'keyword', 'keywords', '_nkw', 'searchTerm'];

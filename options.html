@@ -141,6 +141,27 @@
     .rule-enabled-switch.switch { width: 34px; height: 20px; }
     .rule-enabled-switch.switch input:checked + .slider:before { transform: translateX(14px); }
 
+    /* Per-rule strictness override */
+    .rule-strictness-row {
+      flex-basis: 100%;
+      padding-top: 6px; margin-top: 2px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .rule-strictness-label {
+      font-size: 11px; color: #888; flex-shrink: 0;
+    }
+    .rule-strictness-select {
+      font-size: 11px; font-family: inherit;
+      padding: 2px 6px; border-radius: 4px;
+      border: 1px solid #e5e5e5; background: #fafafa;
+      color: #aaa; cursor: pointer;
+      width: auto;
+    }
+    .rule-strictness-select.has-override {
+      border-color: #6366f1; color: #4338ca;
+      font-weight: 600; background: white;
+    }
+
     /* Scope chip + collapsible editor */
     .rule-scope-chip-row {
       flex-basis: 100%;
@@ -512,6 +533,19 @@
         </label>
       </div>
     </div>
+  </section>
+
+  <section>
+    <h2>Usage limits</h2>
+    <div class="section-hint">
+      Limit how much you use specific parts of the web each day or week. Three modes:
+      <br><strong>Visit count</strong> — block after N distinct page opens (e.g. 1 Netflix episode/day).
+      <br><strong>Time on page</strong> — block after N minutes while the tab is visible (e.g. 30 min/day on Reddit).
+      <br><strong>AI-match override</strong> — let up to N AI-blocked pages through per period, then enforce the block.
+      <br>Patterns: <code>netflix.com/watch/*</code> &nbsp;|&nbsp; <code>*.reddit.com/*</code> &nbsp;|&nbsp; <code>youtube.com/watch*</code> &nbsp;|&nbsp; <code>x.com/*</code>
+    </div>
+    <div id="usage-limits-list"></div>
+    <button id="add-usage-limit" class="btn-secondary" style="margin-top:8px;">+ Add limit</button>
   </section>
 
   <section>

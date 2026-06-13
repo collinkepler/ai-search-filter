@@ -5,7 +5,7 @@
 
 const CACHE_KEY = 'aisf-cache';
 const CACHE_VERSION_KEY = 'aisf-cache-version';
-const CACHE_VERSION = 9; // bump when callClaudeForContext / callClaudeForPosts prompt changes meaningfully
+const CACHE_VERSION = 12; // bump when callClaudeForContext / callClaudeForPosts prompt changes meaningfully
 const IMG_CACHE_KEY = 'aisf-img-cache';
 const IMG_CACHE_VERSION_KEY = 'aisf-img-cache-version';
 const IMG_CACHE_VERSION = 3; // bump when callClaudeForImage prompt changes meaningfully
@@ -25,6 +25,8 @@ const APPEAL_GRANT_TTL_MS = 1000 * 60 * 60; // 1 hour bypass window after a gran
 const PERSONAL_CONTEXT_MAX_CHARS = 2000;
 const DEBUG = true;
 const UNVERIFIED_DEFAULT_MIGRATION_KEY = 'aisf-image-unverified-default-reveal-v1';
+const USAGE_COUNTS_KEY = 'aisf-usage-counts';
+const USAGE_TIME_KEY = 'aisf-usage-time';
 
 const NON_USER_POLICY_GUARD = [
   'Important boundary: classify only against the user-provided rules.',
@@ -155,6 +157,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === 'applyAppealFix') {
+    applyAppealFix(msg.rule).then(sendResponse).catch((err) => {
+      console.error('[AISF] applyAppealFix threw:', err);
+      sendResponse({ ok: false, error: String(err && err.message || err) });
+    });
+    return true;
+  }
+
   if (msg.type === 'classifyImage') {
     classifyImage(msg.imageUrl).then(sendResponse).catch((err) => {
       console.error('[AISF] classifyImage threw:', err);
@@ -178,7 +188,119 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true;
   }
+
+  if (msg.type === 'time-heartbeat') {
+    (async () => {
+      try {
+        const exceeded = [];
+        for (const ruleId of (msg.ruleIds || [])) {
+          const r = await accumulateTime(ruleId, msg.intervalMs || 30000);
+          if (r.exceeded) exceeded.push(ruleId);
+        }
+        sendResponse({ exceededRuleIds: exceeded });
+      } catch (err) {
+        console.error('[AISF] time-heartbeat threw:', err);
+        sendResponse({ exceededRuleIds: [] });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === 'get-time-status') {
+    (async () => {
+      try {
+        const { usageLimits = [] } = await chrome.storage.local.get('usageLimits');
+        const { [USAGE_TIME_KEY]: raw = {} } = await chrome.storage.local.get(USAGE_TIME_KEY);
+        const result = {};
+        for (const rule of (usageLimits || []).filter((r) => r.type === 'time')) {
+          result[rule.id] = ((raw[rule.id] || {})[usagePeriodKey(rule.period)]) || 0;
+        }
+        sendResponse(result);
+      } catch (err) {
+        console.error('[AISF] get-time-status threw:', err);
+        sendResponse({});
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === 'get-usage-counts') {
+    (async () => {
+      try {
+        const { usageLimits = [] } = await chrome.storage.local.get('usageLimits');
+        const { [USAGE_COUNTS_KEY]: raw = {} } = await chrome.storage.local.get(USAGE_COUNTS_KEY);
+        const result = {};
+        for (const rule of (usageLimits || []).filter((r) => r.type !== 'time')) {
+          const key = usagePeriodKey(rule.period);
+          result[rule.id] = Array.isArray((raw[rule.id] || {})[key]) ? (raw[rule.id] || {})[key].length : 0;
+        }
+        sendResponse(result);
+      } catch (err) {
+        console.error('[AISF] get-usage-counts threw:', err);
+        sendResponse({});
+      }
+    })();
+    return true;
+  }
 });
+
+// ============================================================
+// Usage Limits helpers
+// ============================================================
+
+function matchesUsagePattern(pattern, url) {
+  try {
+    const u = new URL(url.includes('://') ? url : 'https://' + url);
+    const stripped = pattern.replace(/^https?:\/\//, '');
+    const slashIdx = stripped.indexOf('/');
+    const hostPat = slashIdx === -1 ? stripped : stripped.slice(0, slashIdx);
+    const pathPat = slashIdx === -1 ? '/*' : stripped.slice(slashIdx);
+    const hostMatch = hostPat.startsWith('*.')
+      ? (u.hostname === hostPat.slice(2) || u.hostname.endsWith('.' + hostPat.slice(2)))
+      : (u.hostname === hostPat || u.hostname === 'www.' + hostPat || 'www.' + u.hostname === hostPat);
+    if (!hostMatch) return false;
+    if (pathPat === '/*' || pathPat === '*' || pathPat === '/') return true;
+    if (pathPat.endsWith('*')) return u.pathname.startsWith(pathPat.slice(0, -1));
+    return u.pathname === pathPat;
+  } catch { return false; }
+}
+
+function usagePeriodKey(period) {
+  const d = new Date();
+  if (period === 'week') {
+    const day = d.getDay() || 7;
+    const mon = new Date(d); mon.setDate(d.getDate() - day + 1);
+    const wk = Math.floor((mon - new Date(mon.getFullYear(), 0, 1)) / 604800000) + 1;
+    return `${mon.getFullYear()}-W${String(wk).padStart(2, '0')}`;
+  }
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+async function checkUsageEntry(ruleId, limit, period, navigationUrl) {
+  const key = usagePeriodKey(period);
+  const urlHash = hashStr(normalizeUrl(navigationUrl));
+  const { [USAGE_COUNTS_KEY]: raw = {} } = await chrome.storage.local.get(USAGE_COUNTS_KEY);
+  const todaySet = Array.isArray((raw[ruleId] || {})[key]) ? (raw[ruleId] || {})[key] : [];
+  if (todaySet.includes(urlHash)) return { outcome: 'already-seen', count: todaySet.length };
+  if (todaySet.length >= limit) return { outcome: 'limit-hit', count: todaySet.length };
+  return { outcome: 'ok', count: todaySet.length, meta: { raw, ruleId, key, urlHash, todaySet } };
+}
+
+async function recordUsageEntry({ raw, ruleId, key, urlHash, todaySet }) {
+  await chrome.storage.local.set({ [USAGE_COUNTS_KEY]: { ...raw, [ruleId]: { [key]: [...todaySet, urlHash] } } });
+}
+
+async function accumulateTime(ruleId, intervalMs) {
+  const { usageLimits = [] } = await chrome.storage.local.get('usageLimits');
+  const rule = (usageLimits || []).find((r) => r.id === ruleId);
+  if (!rule || !rule.enabled) return { exceeded: false };
+  const key = usagePeriodKey(rule.period);
+  const { [USAGE_TIME_KEY]: raw = {} } = await chrome.storage.local.get(USAGE_TIME_KEY);
+  const prev = ((raw[ruleId] || {})[key]) || 0;
+  const next = prev + intervalMs;
+  await chrome.storage.local.set({ [USAGE_TIME_KEY]: { ...raw, [ruleId]: { [key]: next } } });
+  return { exceeded: next >= rule.limit * 60000, spent: next };
+}
 
 // ============================================================
 // Layer 0: page/search/youtube classification
@@ -189,18 +311,38 @@ async function checkContent(content, navigationUrl) {
 
   const granted = navigationUrl ? await hasAppealGrant(navigationUrl) : false;
   if (granted) {
-    const cid = cacheIdFromContent(content);
-    if (cid) await invalidateCacheByPrefix(CACHE_KEY, cid + '::');
+    // Stale blocked verdicts are purged at appeal time (handleAppeal), which also
+    // writes an allowed verdict — invalidating here would delete that fresh entry.
     if (DEBUG) console.log('[AISF] checkContent: appeal grant honored for', navigationUrl);
     return { blocked: false, reason: 'appeal-granted' };
   }
 
-  const stored = await chrome.storage.local.get(['apiKey', 'rules', 'blocklist', 'failMode', 'personalContext', 'personalContextOnHotPaths', 'contentStrictness']);
+  // Usage limits: visit type (no AI needed — purely URL-pattern-based)
+  let visitMeta = null;
+  if (navigationUrl) {
+    const { usageLimits: ul = [] } = await chrome.storage.local.get('usageLimits');
+    for (const rule of (ul || []).filter((r) => r.enabled && r.type === 'visit' && matchesUsagePattern(r.pattern, navigationUrl))) {
+      const ep = await checkUsageEntry(rule.id, rule.limit, rule.period, navigationUrl);
+      if (ep.outcome === 'limit-hit') {
+        const period = rule.period === 'week' ? 'weekly' : 'daily';
+        const resets = rule.period === 'week' ? 'next Monday' : 'at midnight';
+        return {
+          blocked: true,
+          matchedRule: `Usage limit: ${rule.label}`,
+          reason: `You've opened ${ep.count} of your ${rule.limit} allowed ${period} visit${rule.limit === 1 ? '' : 's'}. Resets ${resets}.`
+        };
+      }
+      if (ep.outcome === 'ok' && !visitMeta) visitMeta = ep.meta;
+    }
+  }
+
+  const stored = await chrome.storage.local.get(['apiKey', 'rules', 'blocklist', 'failMode', 'personalContext', 'personalContextOnHotPaths', 'contentStrictness', 'usageLimits']);
   const apiKey = stored.apiKey || '';
   const failMode = stored.failMode || 'open';
   const useOnHotPaths = stored.personalContextOnHotPaths !== false; // default ON
   const personalContext = useOnHotPaths ? (stored.personalContext || '').trim() : '';
   const contentStrictness = stored.contentStrictness || 'strict';
+  const aiGoalRules = (stored.usageLimits || []).filter((r) => r.enabled && r.type === 'ai-goal');
 
   let rules = Array.isArray(stored.rules) ? stored.rules : null;
   if (!rules && typeof stored.blocklist === 'string' && stored.blocklist.trim()) {
@@ -215,21 +357,29 @@ async function checkContent(content, navigationUrl) {
   const scopedRules = rules.filter((r) => ruleAppliesToHost(r, host));
   const { blockRules, allowRules, onlyAllowRules } = splitRulesByMode(scopedRules);
 
-  if (!apiKey || (blockRules.length === 0 && onlyAllowRules.length === 0)) {
+  if (!apiKey || (blockRules.length === 0 && onlyAllowRules.length === 0 && aiGoalRules.length === 0)) {
+    if (visitMeta) await recordUsageEntry(visitMeta);
     return { blocked: false, reason: 'not-configured' };
   }
 
   let context, cacheId;
   try {
     const built = await buildContext(content);
-    if (!built) return { blocked: false, reason: 'no-context' };
+    if (!built) {
+      if (visitMeta) await recordUsageEntry(visitMeta);
+      return { blocked: false, reason: 'no-context' };
+    }
     context = built.context;
     cacheId = built.cacheId;
   } catch (e) {
     return { blocked: failMode === 'closed', reason: 'context-error', error: String(e && e.message || e) };
   }
 
-  const ruleForHash = (r) => ({ t: r.text, s: r.scope || [] });
+  const ruleForHash = (r) => {
+    const obj = { t: r.text, s: r.scope || [] };
+    if (r.strictness) obj.st = r.strictness;
+    return obj;
+  };
   const hashSource = {
     b: blockRules.map(ruleForHash),
     a: allowRules.map(ruleForHash)
@@ -237,16 +387,80 @@ async function checkContent(content, navigationUrl) {
   if (onlyAllowRules.length) hashSource.oa = onlyAllowRules.map(ruleForHash);
   if (personalContext) hashSource.pc = hashStr(personalContext);
   if (contentStrictness && contentStrictness !== 'balanced') hashSource.cs = contentStrictness;
+  if (aiGoalRules.length) hashSource.ag = aiGoalRules.map((r) => ({ id: r.id, label: r.label }));
   const rulesHash = hashStr(JSON.stringify(hashSource));
   const cacheKey = `${cacheId}::${rulesHash}`;
 
   const cached = await getCached(CACHE_KEY, cacheKey, CACHE_TTL_MS);
-  if (cached) return { ...cached, fromCache: true };
+  if (cached) {
+    if (cached.blocked && navigationUrl) {
+      const { usageLimits: ul2 = [] } = await chrome.storage.local.get('usageLimits');
+      for (const rule of (ul2 || []).filter((r) => r.enabled && r.type === 'ai-match' && matchesUsagePattern(r.pattern, navigationUrl))) {
+        const ep = await checkUsageEntry(rule.id, rule.limit, rule.period, navigationUrl);
+        if (ep.outcome === 'already-seen') { if (visitMeta) await recordUsageEntry(visitMeta); return { blocked: false, reason: `usage-limit-grace:${rule.id}`, fromCache: true }; }
+        if (ep.outcome === 'ok') { await recordUsageEntry(ep.meta); if (visitMeta) await recordUsageEntry(visitMeta); return { blocked: false, reason: `usage-limit-grace:${rule.id}`, fromCache: true }; }
+      }
+    }
+    // AI-goal limits: re-evaluate the goal count on every cache hit (limits reset daily/weekly)
+    if (navigationUrl && Array.isArray(cached.matchedGoalIds) && cached.matchedGoalIds.length) {
+      for (const goalId of cached.matchedGoalIds) {
+        const goalRule = aiGoalRules.find((r) => r.id === goalId);
+        if (!goalRule) continue;
+        const ep = await checkUsageEntry(goalRule.id, goalRule.limit, goalRule.period, navigationUrl);
+        if (ep.outcome === 'limit-hit') {
+          const resets = goalRule.period === 'week' ? 'next Monday' : 'at midnight';
+          return { blocked: true, matchedRule: `Goal limit: ${goalRule.label}`, reason: `You've reached your ${goalRule.period === 'week' ? 'weekly' : 'daily'} limit of ${goalRule.limit} for: ${goalRule.label}. Resets ${resets}.`, fromCache: true };
+        }
+        if (ep.outcome === 'ok') await recordUsageEntry(ep.meta);
+      }
+    }
+    if (visitMeta && !cached.blocked) await recordUsageEntry(visitMeta);
+    return { ...cached, fromCache: true, cacheKey };
+  }
 
   try {
-    const decision = await callClaudeForContext(context, blockRules, allowRules, onlyAllowRules, apiKey, personalContext, contentStrictness);
+    const decision = await callClaudeForContext(context, blockRules, allowRules, onlyAllowRules, apiKey, personalContext, contentStrictness, aiGoalRules);
+
+    // AI-match limits: override Claude's block verdict if the user still has grace budget
+    if (decision.blocked && navigationUrl) {
+      const { usageLimits: ul3 = [] } = await chrome.storage.local.get('usageLimits');
+      for (const rule of (ul3 || []).filter((r) => r.enabled && r.type === 'ai-match' && matchesUsagePattern(r.pattern, navigationUrl))) {
+        const ep = await checkUsageEntry(rule.id, rule.limit, rule.period, navigationUrl);
+        if (ep.outcome === 'already-seen') {
+          if (visitMeta) await recordUsageEntry(visitMeta);
+          await setCached(CACHE_KEY, cacheKey, decision, MAX_CACHE_ENTRIES);
+          return { blocked: false, reason: `usage-limit-grace:${rule.id}` };
+        }
+        if (ep.outcome === 'ok') {
+          await recordUsageEntry(ep.meta);
+          if (visitMeta) await recordUsageEntry(visitMeta);
+          await setCached(CACHE_KEY, cacheKey, decision, MAX_CACHE_ENTRIES);
+          return { blocked: false, reason: `usage-limit-grace:${rule.id}` };
+        }
+        // 'limit-hit' → fall through, enforce the block
+      }
+    }
+
+    // AI-goal limits: check if this page satisfied any goals and enforce their budgets
+    if (navigationUrl && decision.matchedGoalIds && decision.matchedGoalIds.length) {
+      for (const goalId of decision.matchedGoalIds) {
+        const goalRule = aiGoalRules.find((r) => r.id === goalId);
+        if (!goalRule) continue;
+        const ep = await checkUsageEntry(goalRule.id, goalRule.limit, goalRule.period, navigationUrl);
+        if (ep.outcome === 'limit-hit') {
+          // Cache the content decision (with matchedGoalIds) so future hits re-evaluate the count.
+          // Do NOT cache this as blocked:true — the goal limit resets and the block.html flow differs.
+          await setCached(CACHE_KEY, cacheKey, decision, MAX_CACHE_ENTRIES);
+          const resets = goalRule.period === 'week' ? 'next Monday' : 'at midnight';
+          return { blocked: true, matchedRule: `Goal limit: ${goalRule.label}`, reason: `You've reached your ${goalRule.period === 'week' ? 'weekly' : 'daily'} limit of ${goalRule.limit} for: ${goalRule.label}. Resets ${resets}.`, cacheKey };
+        }
+        if (ep.outcome === 'ok') await recordUsageEntry(ep.meta);
+      }
+    }
+
     await setCached(CACHE_KEY, cacheKey, decision, MAX_CACHE_ENTRIES);
-    return decision;
+    if (visitMeta && !decision.blocked) await recordUsageEntry(visitMeta);
+    return { ...decision, cacheKey };
   } catch (e) {
     return { blocked: failMode === 'closed', reason: 'api-error', error: String(e && e.message || e) };
   }
@@ -298,23 +512,35 @@ async function fetchYouTubeMeta(videoId) {
   } catch (e) { return null; }
 }
 
-async function callClaudeForContext(context, blockRules, allowRules, onlyAllowRules, apiKey, personalContext, contentStrictness) {
+async function callClaudeForContext(context, blockRules, allowRules, onlyAllowRules, apiKey, personalContext, contentStrictness, aiGoalRules = []) {
   const blockListText = blockRules.length
-    ? blockRules.map((r, i) => `${i + 1}. ${r.text}`).join('\n')
+    ? blockRules.map((r, i) => `${i + 1}. ${r.text}${ruleStrictnessText(r)}`).join('\n')
     : '(none)';
   const allowListText = allowRules.length
-    ? allowRules.map((r, i) => `${i + 1}. ${r.text}`).join('\n')
+    ? allowRules.map((r, i) => `${i + 1}. ${r.text}${ruleStrictnessText(r)}`).join('\n')
     : '(none)';
   const onlyAllowListText = onlyAllowRules.length
-    ? onlyAllowRules.map((r, i) => `${i + 1}. ${r.text}`).join('\n')
+    ? onlyAllowRules.map((r, i) => `${i + 1}. ${r.text}${ruleStrictnessText(r)}`).join('\n')
     : '(none)';
 
   const contextBlock = buildPersonalContextBlock(personalContext);
   const strictnessDirective = buildStrictnessDirective(contentStrictness, 'content');
+  const overrideExplanation = anyRuleHasStrictness(blockRules, allowRules, onlyAllowRules)
+    ? 'Rules annotated with [strictness: <tier>] override the global strictness for that rule only.'
+    : '';
+
+  const goalSection = aiGoalRules.length > 0 ? [
+    '',
+    'GOAL TRACKING:',
+    'In addition to the block/allow verdict, determine whether this page satisfies any of the following user goals. Add a "matchedGoalIds" array to your JSON response with IDs of goals this page satisfies (empty array if none). A goal is satisfied when the page\'s primary content or purpose clearly fulfills it — e.g. "watch an episode of a TV show" is satisfied by an episode page on any streaming site, but not a homepage, trailer, or search page.',
+    'Goals:',
+    ...aiGoalRules.map((r) => `- ID "${r.id}": "${r.label}"`),
+  ] : [];
 
   const systemPrompt = onlyAllowRules.length > 0 ? [
     contextBlock,
     strictnessDirective,
+    overrideExplanation,
     'You classify web content against the user\'s rules.',
     NON_USER_POLICY_GUARD,
     '',
@@ -339,16 +565,19 @@ async function callClaudeForContext(context, blockRules, allowRules, onlyAllowRu
     '- If a rule matched: name what the page is and which rule it triggered (e.g. "page is a tutorial about async/await JavaScript, matches your only-allow rule for programming content").',
     '- If no rule matched: describe what the page appears to be in one short sentence, then say which of the user\'s only-allow rules it failed to fit (e.g. "page is a celebrity gossip article; doesn\'t fit your only-allow rules for programming or cooking content").',
     'Never return a boilerplate or generic reason. The user reads this verbatim to decide whether their rules are right.',
+    'The reason must explain specifically why matchedRule applies to this content. Do not mention or reference any other rule — even if the content could have triggered one.',
     '',
     'Be reasonable: educational/news content ABOUT a topic in an only-allow rule counts as a match. Do not invent matches — if it is truly unrelated, block it.',
     '',
     'Judge only the page\'s subject matter against the rule text. Do not factor in whether the site appears to involve piracy, illegal streaming, copyright infringement, scams, or anything you personally consider harmful or unethical — none of that affects rule matching unless a rule explicitly names it. A page whose topic matches an only-allow rule is allowed even if the site itself is one you would personally avoid; the reason field must cite the actual rule fit, never the site\'s legality.',
+    ...goalSection,
     '',
     'Respond with ONLY valid JSON, no fences or prose:',
-    '{"blocked": true|false, "matchedRule": "exact rule text or null", "reason": "1-2 sentence substantive explanation, required"}'
+    `{"blocked": true|false, "matchedRule": "exact rule text or null", "reason": "1-2 sentence substantive explanation, required"${aiGoalRules.length > 0 ? ', "matchedGoalIds": []' : ''}}`
   ].join('\n') : [
     contextBlock,
     strictnessDirective,
+    overrideExplanation,
     'You classify web content against the user\'s rules.',
     NON_USER_POLICY_GUARD,
     '',
@@ -359,20 +588,22 @@ async function callClaudeForContext(context, blockRules, allowRules, onlyAllowRu
     allowListText,
     '',
     'Process: allow > block > default-allow. Be reasonable; educational/recovery/news content ABOUT a blocked topic is usually allowed.',
+    'The reason field must explain specifically why matchedRule applies to this content. Do not mention or reference any other rule — even if the content could have triggered one.',
     '',
     'Classify the page ONLY against the rules above — they are the sole authority. Do NOT block a page for any reason the user did not list. In particular, do not block it because the site appears to involve piracy, illegal streaming, copyright infringement, scams, malware, or because you personally consider it harmful, unsafe, sketchy, or unethical — those judgments are not yours to make here. If no block rule matches the page\'s actual subject matter, you MUST return blocked=false, even for a site you would personally avoid.',
     '',
     'When a rule describes content by the purpose it serves or the impulse it satisfies — whether phrased in the first person ("block things I\'d look up if I was X") or generally ("block anything someone would search for to find Y") — treat any search query or page that plausibly serves that purpose as a match, even when the wording is mild, euphemistic, or indirect. Such a rule is a precommitment by the user against their own weaker moments; on ambiguous or borderline cases, err toward honoring it. Apply it consistently: if one query matches the rule, near-synonyms and paraphrases of that query must receive the same verdict. This overrides the educational/news carve-out only for such intent-phrased rules.',
+    ...goalSection,
     '',
     'Respond with ONLY valid JSON, no fences or prose:',
-    '{"blocked": true|false, "matchedRule": "exact rule text or null", "reason": "one-sentence explanation, required"}'
+    `{"blocked": true|false, "matchedRule": "exact rule text or null", "reason": "one-sentence explanation, required"${aiGoalRules.length > 0 ? ', "matchedGoalIds": []' : ''}}`
   ].join('\n');
 
   const data = await callAnthropic({
     apiKey,
     system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
     messages: [{ role: 'user', content: context }],
-    max_tokens: 300
+    max_tokens: aiGoalRules.length > 0 ? 400 : 300
   });
 
   const textBlock = (data.content || []).find((b) => b.type === 'text');
@@ -383,7 +614,8 @@ async function callClaudeForContext(context, blockRules, allowRules, onlyAllowRu
 
   const matchedRule = (typeof parsed.matchedRule === 'string' && parsed.matchedRule.trim()) ? parsed.matchedRule.trim() : null;
   const reason = (typeof parsed.reason === 'string' && parsed.reason.trim()) ? parsed.reason.trim() : null;
-  return { blocked: Boolean(parsed.blocked), matchedRule, category: matchedRule, reason, rawResponse: rawText };
+  const matchedGoalIds = Array.isArray(parsed.matchedGoalIds) ? parsed.matchedGoalIds.filter((id) => typeof id === 'string') : [];
+  return { blocked: Boolean(parsed.blocked), matchedRule, category: matchedRule, reason, matchedGoalIds, rawResponse: rawText };
 }
 
 // ============================================================
@@ -577,21 +809,25 @@ async function classifyPosts(posts, hostname) {
 
 async function callClaudeForPosts(posts, blockRules, allowRules, onlyAllowRules, apiKey, personalContext, contentStrictness) {
   const blockListText = blockRules.length
-    ? blockRules.map((r, i) => `${i + 1}. ${r.text}`).join('\n')
+    ? blockRules.map((r, i) => `${i + 1}. ${r.text}${ruleStrictnessText(r)}`).join('\n')
     : '(none)';
   const allowListText = allowRules.length
-    ? allowRules.map((r, i) => `${i + 1}. ${r.text}`).join('\n')
+    ? allowRules.map((r, i) => `${i + 1}. ${r.text}${ruleStrictnessText(r)}`).join('\n')
     : '(none)';
   const onlyAllowListText = onlyAllowRules.length
-    ? onlyAllowRules.map((r, i) => `${i + 1}. ${r.text}`).join('\n')
+    ? onlyAllowRules.map((r, i) => `${i + 1}. ${r.text}${ruleStrictnessText(r)}`).join('\n')
     : '(none)';
 
   const contextBlock = buildPersonalContextBlock(personalContext);
   const strictnessDirective = buildStrictnessDirective(contentStrictness, 'content');
+  const overrideExplanation = anyRuleHasStrictness(blockRules, allowRules, onlyAllowRules)
+    ? 'Rules annotated with [strictness: <tier>] override the global strictness for that rule only.'
+    : '';
 
   const systemPrompt = onlyAllowRules.length > 0 ? [
     contextBlock,
     strictnessDirective,
+    overrideExplanation,
     'You classify a list of social media / feed posts against the user\'s rules.',
     NON_USER_POLICY_GUARD,
     '',
@@ -619,6 +855,7 @@ async function callClaudeForPosts(posts, blockRules, allowRules, onlyAllowRules,
   ].join('\n') : [
     contextBlock,
     strictnessDirective,
+    overrideExplanation,
     'You classify a list of social media / feed posts against the user\'s rules.',
     NON_USER_POLICY_GUARD,
     '',
@@ -667,7 +904,7 @@ async function callClaudeForPosts(posts, blockRules, allowRules, onlyAllowRules,
 // Appeals (Claude Sonnet reviews user-submitted block appeals)
 // ============================================================
 
-async function handleAppeal({ originalUrl, query, matchedRule, originalReason, appealText }) {
+async function handleAppeal({ originalUrl, query, matchedRule, originalReason, appealText, cacheKey }) {
   const appeal = (appealText || '').trim();
   if (!appeal) {
     return { overturned: false, reason: 'Write something in the appeal box explaining why this block is wrong.' };
@@ -699,7 +936,23 @@ async function handleAppeal({ originalUrl, query, matchedRule, originalReason, a
   }
 
   if (decision.overturned) {
+    // Grant stays as a 1-hour fallback for blocks without a cacheKey (e.g. usage limits).
     await setAppealGrant(originalUrl);
+    if (typeof cacheKey === 'string' && cacheKey.includes('::')) {
+      // Purge the stale blocked verdict (all rules-hash variants), then persist the
+      // overturn as a normal allowed verdict so the page stays unblocked for the
+      // standard cache lifetime instead of just the grant window. Rule edits
+      // invalidate it like any other verdict.
+      await invalidateCacheByPrefix(CACHE_KEY, cacheKey.split('::')[0] + '::');
+      await setCached(CACHE_KEY, cacheKey, {
+        blocked: false,
+        matchedRule: null,
+        category: null,
+        reason: 'Appeal granted: ' + decision.reason,
+        appealOverturned: true
+      }, MAX_CACHE_ENTRIES);
+      if (DEBUG) console.log('[AISF] appeal overturn cached for', cacheKey);
+    }
   }
   return decision;
 }
@@ -730,8 +983,13 @@ async function callClaudeForAppeal({ apiKey, originalUrl, query, matchedRule, or
     '',
     hasContext ? 'You will be given an "ABOUT THE USER" block describing who the user actually is — they wrote it in advance, in a calm moment, as ground truth. Treat it as authoritative. If the appeal contradicts it (e.g. claims a profession the user has not stated, or a livelihood/research justification that depends on an identity the user does not have), default to UPHOLD. The user wrote the about-you block specifically to stop themselves from spoofing you in the heat of the moment.' : null,
     hasContext ? '' : null,
+    'RULE-FIX SUGGESTION (the "fix" field):',
+    'When you overturn AND the false positive looks like a recurring pattern (the rule will keep wrongly matching this kind of content), also propose a minimal exception rule the user can choose to add. It becomes an allow-mode rule that force-allows matching content even when a block rule fires, so word it NARROWLY: it must cover only the false-positive class, never gut the original rule (e.g. for a "gambling" rule wrongly blocking game journalism: "news and reviews about video games that mention loot boxes or in-game purchases").',
+    'Set "scope" to the relevant bare hostname(s) (e.g. ["example.com"]) when the problem is specific to a site; use [] when the false-positive class is site-independent (e.g. search queries).',
+    'Set fix to null when you uphold, when the overturn is a one-off scoped exception (a single work/research/safety need rather than a misfiring rule), or when you cannot word an exception that would not weaken the rule.',
+    '',
     'Respond with ONLY valid JSON, no fences or prose:',
-    '{"overturned": true|false, "reason": "1-2 sentences addressed directly to the user explaining your decision"}'
+    '{"overturned": true|false, "reason": "1-2 sentences addressed directly to the user explaining your decision", "fix": {"text": "narrow allow-rule text", "scope": ["host.com"]} | null}'
   ].filter((l) => l !== null).join('\n');
 
   const userContent = [
@@ -757,7 +1015,7 @@ async function callClaudeForAppeal({ apiKey, originalUrl, query, matchedRule, or
     model: APPEAL_MODEL,
     system: systemPrompt,
     messages: [{ role: 'user', content: userContent }],
-    max_tokens: 400,
+    max_tokens: 600,
     timeoutMs: 20000
   });
 
@@ -768,7 +1026,46 @@ async function callClaudeForAppeal({ apiKey, originalUrl, query, matchedRule, or
   const parsed = JSON.parse(cleaned);
 
   const reason = (typeof parsed.reason === 'string' && parsed.reason.trim()) ? parsed.reason.trim() : 'No reason given.';
-  return { overturned: Boolean(parsed.overturned), reason, rawResponse: rawText };
+  let suggestedFix = null;
+  if (parsed.overturned && parsed.fix && typeof parsed.fix === 'object' &&
+      typeof parsed.fix.text === 'string' && parsed.fix.text.trim()) {
+    suggestedFix = {
+      text: parsed.fix.text.trim().slice(0, 300),
+      scope: Array.isArray(parsed.fix.scope)
+        ? parsed.fix.scope.filter((s) => typeof s === 'string' && s.trim()).map((s) => s.trim().toLowerCase())
+        : []
+    };
+  }
+  return { overturned: Boolean(parsed.overturned), reason, suggestedFix, rawResponse: rawText };
+}
+
+// Applies a Sonnet-suggested exception rule from a granted appeal. The weakening was
+// already adjudicated by the strict appeal review and the rule text comes from Sonnet,
+// not the user, so this does not go through the rule-change appeal gate.
+async function applyAppealFix(rule) {
+  const text = (rule && typeof rule.text === 'string') ? rule.text.trim().slice(0, 300) : '';
+  if (!text) return { ok: false, error: 'No rule text provided.' };
+  const scope = (rule && Array.isArray(rule.scope))
+    ? rule.scope.filter((s) => typeof s === 'string' && s.trim()).map((s) => s.trim().toLowerCase())
+    : [];
+
+  const stored = await chrome.storage.local.get(['rules', 'blocklist']);
+  let rules = Array.isArray(stored.rules) ? stored.rules : null;
+  if (!rules && typeof stored.blocklist === 'string' && stored.blocklist.trim()) {
+    rules = stored.blocklist.split('\n').map((l) => l.trim()).filter(Boolean)
+      .map((t) => ({ id: rand(), text: t, mode: 'block' }));
+    await chrome.storage.local.remove('blocklist');
+  }
+  if (!rules) rules = [];
+
+  const exists = rules.some((r) => r && r.mode === 'allow' && r.enabled !== false && (r.text || '').trim() === text);
+  if (exists) return { ok: true, dedup: true };
+
+  rules.push({ id: rand(), text, mode: 'allow', enabled: true, scope });
+  await chrome.storage.local.set({ rules });
+  await chrome.storage.local.remove(CACHE_KEY); // rules changed — mirror options.js Save
+  if (DEBUG) console.log('[AISF] appeal fix applied: allow rule added:', text, scope);
+  return { ok: true };
 }
 
 // ============================================================
@@ -903,6 +1200,14 @@ function ruleScopeText(r) {
   return '';
 }
 
+function ruleStrictnessText(r) {
+  return r.strictness ? ` [strictness: ${r.strictness}]` : '';
+}
+
+function anyRuleHasStrictness(...lists) {
+  return lists.some((l) => l.some((r) => r.strictness));
+}
+
 function formatSettingValue(v) {
   if (Array.isArray(v)) return v.length ? `[${v.join(', ')}]` : '[empty]';
   if (v === '' || v == null) return '(empty)';
@@ -937,14 +1242,6 @@ async function setAppealGrant(navigationUrl) {
   }
   grants[key] = { t: Date.now() };
   await chrome.storage.local.set({ [APPEAL_GRANT_KEY]: grants });
-}
-
-function cacheIdFromContent(content) {
-  if (!content) return null;
-  if (content.type === 'search') return `search:${content.query.toLowerCase().trim()}`;
-  if (content.type === 'youtube_video') return `yt:${content.videoId}`;
-  if (content.type === 'page') return 'page:' + normalizeUrl(content.url);
-  return null;
 }
 
 async function invalidateCacheByPrefix(storeKey, prefix) {

@@ -1,13 +1,15 @@
 const $ = (id) => document.getElementById(id);
 
 let rules = [];
+let usageLimitRules = [];
+const expandedUsageIds = new Set();
 
 const SETTINGS_STORAGE_KEYS = [
   'apiKey', 'rules', 'failMode', 'allowDomains', 'imageScannerExcludeDomains',
   'enableSiteFilters', 'enableImageScanner', 'enablePostScanner',
   'intelligentImageScanner', 'imageMinSize', 'imageStrictness', 'imageUnverifiedAction',
   'postAction', 'personalContext', 'personalContextOnHotPaths',
-  'contentStrictness', 'appealStrictness'
+  'contentStrictness', 'appealStrictness', 'usageLimits'
 ];
 
 const STRICTNESS_ORDER = ['very-lenient', 'lenient', 'balanced', 'strict', 'very-strict'];
@@ -105,7 +107,7 @@ async function load() {
     'imageMinSize', 'postAction', 'imageScannerExcludeDomains', 'personalContext',
     'personalContextOnHotPaths', 'intelligentImageScanner',
     'imageStrictness', 'imageUnverifiedAction',
-    'contentStrictness', 'appealStrictness'
+    'contentStrictness', 'appealStrictness', 'usageLimits'
   ]);
 
   $('apiKey').value = stored.apiKey || '';
@@ -141,6 +143,11 @@ async function load() {
     rules = [];
   }
   renderRules();
+
+  // Usage limits
+  usageLimitRules = Array.isArray(stored.usageLimits) ? stored.usageLimits.map((r) => ({ ...r, id: r.id || genId() })) : [];
+  renderUsageLimits();
+  loadUsageStatus();
 }
 
 function renderRules() {
@@ -235,6 +242,34 @@ function renderRules() {
     row.appendChild(input);
     row.appendChild(toggle);
     row.appendChild(del);
+
+    // Per-rule strictness override dropdown.
+    const strictnessRow = document.createElement('div');
+    strictnessRow.className = 'rule-strictness-row';
+    const strictnessLabel = document.createElement('span');
+    strictnessLabel.className = 'rule-strictness-label';
+    strictnessLabel.textContent = 'Strictness:';
+    const strictnessSelect = document.createElement('select');
+    strictnessSelect.className = 'rule-strictness-select' + (rule.strictness ? ' has-override' : '');
+    for (const [val, label] of [
+      ['', 'Default (inherit global)'],
+      ['very-lenient', 'Very Lenient'],
+      ['lenient', 'Lenient'],
+      ['strict', 'Strict'],
+      ['very-strict', 'Very Strict'],
+    ]) {
+      const o = document.createElement('option');
+      o.value = val; o.textContent = label;
+      if ((rule.strictness || '') === val) o.selected = true;
+      strictnessSelect.appendChild(o);
+    }
+    strictnessSelect.addEventListener('change', (e) => {
+      rules[idx].strictness = e.target.value || null;
+      strictnessSelect.className = 'rule-strictness-select' + (rules[idx].strictness ? ' has-override' : '');
+    });
+    strictnessRow.appendChild(strictnessLabel);
+    strictnessRow.appendChild(strictnessSelect);
+    row.appendChild(strictnessRow);
 
     // Scope chip (always visible) + collapsible editor below.
     const chipRow = document.createElement('div');
@@ -402,13 +437,229 @@ function expandHost(s) {
   return [n];
 }
 
+// ============================================================
+// Usage Limits UI
+// ============================================================
+
+function renderUsageLimits() {
+  const container = $('usage-limits-list');
+  if (!container) return;
+  container.innerHTML = '';
+
+  if (!usageLimitRules.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'color:#888;font-size:13px;margin-bottom:8px;';
+    empty.textContent = 'No limits yet. Click "+ Add limit" to create one.';
+    container.appendChild(empty);
+    return;
+  }
+
+  usageLimitRules.forEach((rule, idx) => {
+    const card = document.createElement('div');
+    card.className = 'layer-card';
+    if (!rule.enabled) card.classList.add('disabled');
+    card.style.marginBottom = '10px';
+
+    const isExpanded = expandedUsageIds.has(rule.id);
+
+    // Collapsed header row
+    const header = document.createElement('div');
+    header.className = 'layer-header';
+    header.style.cursor = 'pointer';
+    header.title = 'Click to edit';
+
+    const left = document.createElement('div');
+    left.style.cssText = 'display:flex;align-items:center;gap:8px;flex:1;min-width:0;';
+
+    // Enable toggle
+    const toggleLabel = document.createElement('label');
+    toggleLabel.className = 'switch';
+    toggleLabel.style.flexShrink = '0';
+    toggleLabel.addEventListener('click', (e) => e.stopPropagation());
+    const toggleInput = document.createElement('input');
+    toggleInput.type = 'checkbox';
+    toggleInput.checked = rule.enabled !== false;
+    toggleInput.addEventListener('change', (e) => { usageLimitRules[idx].enabled = e.target.checked; renderUsageLimits(); });
+    const toggleSlider = document.createElement('span');
+    toggleSlider.className = 'slider';
+    toggleLabel.appendChild(toggleInput);
+    toggleLabel.appendChild(toggleSlider);
+    left.appendChild(toggleLabel);
+
+    // Type badge
+    const badge = document.createElement('span');
+    const badgeLabels = { visit: 'visit', time: 'time', 'ai-match': 'AI-match', 'ai-goal': 'AI-goal' };
+    badge.textContent = badgeLabels[rule.type] || rule.type;
+    badge.style.cssText = 'font-size:11px;padding:1px 7px;border-radius:10px;background:#e8e8e8;color:#555;flex-shrink:0;white-space:nowrap;';
+    left.appendChild(badge);
+
+    // Label + pattern summary
+    const titleEl = document.createElement('span');
+    titleEl.style.cssText = 'font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    titleEl.textContent = rule.type === 'ai-goal' ? (rule.label || '(no goal)') : (rule.label || '(unnamed)');
+    left.appendChild(titleEl);
+
+    const summaryEl = document.createElement('span');
+    summaryEl.style.cssText = 'font-size:12px;color:#888;white-space:nowrap;margin-left:6px;';
+    const unit = rule.type === 'time' ? 'min' : (rule.limit === 1 ? 'time' : 'times');
+    const locationStr = rule.type === 'ai-goal' ? 'any site' : (rule.pattern || '(no pattern)');
+    summaryEl.textContent = `${rule.limit} ${unit}/${rule.period === 'week' ? 'wk' : 'day'} · ${locationStr}`;
+    left.appendChild(summaryEl);
+
+    header.appendChild(left);
+
+    // Delete button
+    const delBtn = document.createElement('button');
+    delBtn.textContent = '✕';
+    delBtn.title = 'Delete';
+    delBtn.style.cssText = 'background:none;border:none;color:#bbb;cursor:pointer;font-size:15px;padding:2px 6px;margin-left:8px;flex-shrink:0;';
+    delBtn.addEventListener('click', (e) => { e.stopPropagation(); usageLimitRules.splice(idx, 1); expandedUsageIds.delete(rule.id); renderUsageLimits(); });
+    header.appendChild(delBtn);
+
+    card.appendChild(header);
+
+    // Usage status line
+    const statusEl = document.createElement('div');
+    statusEl.id = `usage-status-${rule.id}`;
+    statusEl.style.cssText = 'font-size:12px;color:#888;margin-top:3px;min-height:16px;';
+    card.appendChild(statusEl);
+
+    header.addEventListener('click', () => {
+      expandedUsageIds.has(rule.id) ? expandedUsageIds.delete(rule.id) : expandedUsageIds.add(rule.id);
+      renderUsageLimits();
+    });
+
+    // Expanded inline editor
+    if (isExpanded) {
+      const ed = document.createElement('div');
+      ed.style.cssText = 'margin-top:12px;border-top:1px solid #f0f0f0;padding-top:12px;display:flex;flex-direction:column;gap:10px;';
+
+      const field = (labelText, el) => {
+        const wrap = document.createElement('label');
+        wrap.style.cssText = 'font-size:13px;color:#555;display:flex;flex-direction:column;gap:4px;';
+        wrap.appendChild(Object.assign(document.createElement('span'), { textContent: labelText }));
+        wrap.appendChild(el);
+        return wrap;
+      };
+      const inputStyle = 'padding:6px 8px;border:1px solid #d4d4d4;border-radius:4px;font-size:13px;font-family:inherit;';
+
+      // Type select
+      const typeEl = document.createElement('select');
+      typeEl.style.cssText = inputStyle + 'background:white;';
+      [['visit', 'Visit count — block after N distinct page opens'],
+       ['time', 'Time on page — block after N minutes (visible tab time)'],
+       ['ai-match', 'AI-match override — allow up to N AI-blocked pages through'],
+       ['ai-goal', 'AI goal — describe what to limit; AI decides per page, any site']
+      ].forEach(([v, l]) => {
+        const opt = document.createElement('option');
+        opt.value = v; opt.textContent = l;
+        if (rule.type === v) opt.selected = true;
+        typeEl.appendChild(opt);
+      });
+      typeEl.addEventListener('change', (e) => { usageLimitRules[idx].type = e.target.value; renderUsageLimits(); });
+      ed.appendChild(field('Type', typeEl));
+
+      if (rule.type === 'ai-goal') {
+        // Goal textarea (replaces label + pattern for ai-goal rules)
+        const goalInp = document.createElement('textarea');
+        goalInp.value = rule.label || '';
+        goalInp.placeholder = 'e.g. watch an episode of a TV show';
+        goalInp.rows = 2;
+        goalInp.style.cssText = inputStyle + 'resize:vertical;';
+        goalInp.addEventListener('input', (e) => { usageLimitRules[idx].label = e.target.value; });
+        ed.appendChild(field('Goal (plain English — AI evaluates this against each page you visit)', goalInp));
+      } else {
+        // Label input
+        const labelInp = Object.assign(document.createElement('input'), { type: 'text', value: rule.label || '', placeholder: 'e.g. Netflix episodes' });
+        labelInp.style.cssText = inputStyle;
+        labelInp.addEventListener('input', (e) => { usageLimitRules[idx].label = e.target.value; });
+        ed.appendChild(field('Label', labelInp));
+
+        // Pattern input
+        const patInp = Object.assign(document.createElement('input'), { type: 'text', value: rule.pattern || '', placeholder: 'netflix.com/watch/*' });
+        patInp.style.cssText = inputStyle;
+        patInp.addEventListener('input', (e) => { usageLimitRules[idx].pattern = e.target.value.trim(); });
+        ed.appendChild(field('URL pattern (glob: * = any chars in path segment, *.domain = any subdomain)', patInp));
+      }
+
+      // Limit + period row
+      const limitRow = document.createElement('div');
+      limitRow.style.cssText = 'display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;';
+      const limitInp = Object.assign(document.createElement('input'), { type: 'number', min: '1', max: rule.type === 'time' ? '1440' : '100', step: '1', value: rule.limit || 1 });
+      limitInp.style.cssText = inputStyle + 'width:80px;';
+      limitInp.addEventListener('input', (e) => { usageLimitRules[idx].limit = Math.max(1, parseInt(e.target.value, 10) || 1); });
+      const limitUnit = rule.type === 'time' ? 'Minutes per' : 'Times per';
+      limitRow.appendChild(field(limitUnit, limitInp));
+      const periodEl = document.createElement('select');
+      periodEl.style.cssText = inputStyle + 'background:white;';
+      [['day', 'Day (resets at midnight)'], ['week', 'Week (resets Monday)']].forEach(([v, l]) => {
+        const opt = document.createElement('option');
+        opt.value = v; opt.textContent = l;
+        if (rule.period === v) opt.selected = true;
+        periodEl.appendChild(opt);
+      });
+      periodEl.addEventListener('change', (e) => { usageLimitRules[idx].period = e.target.value; });
+      limitRow.appendChild(field('Period', periodEl));
+      ed.appendChild(limitRow);
+
+      card.appendChild(ed);
+    }
+
+    container.appendChild(card);
+  });
+}
+
+async function loadUsageStatus() {
+  if (!usageLimitRules.length) return;
+  const countRules = usageLimitRules.filter((r) => r.type !== 'time');
+  const timeRules = usageLimitRules.filter((r) => r.type === 'time');
+
+  if (countRules.length) {
+    chrome.runtime.sendMessage({ type: 'get-usage-counts' }, (res) => {
+      if (!res) return;
+      for (const rule of countRules) {
+        const el = document.getElementById(`usage-status-${rule.id}`);
+        if (!el) continue;
+        const count = res[rule.id] || 0;
+        const period = rule.period === 'week' ? 'this week' : 'today';
+        el.textContent = `${period}: ${count} / ${rule.limit} ${rule.type === 'ai-match' ? 'overrides used' : (rule.limit === 1 ? 'time opened' : 'times opened')}`;
+      }
+    });
+  }
+  if (timeRules.length) {
+    chrome.runtime.sendMessage({ type: 'get-time-status' }, (res) => {
+      if (!res) return;
+      for (const rule of timeRules) {
+        const el = document.getElementById(`usage-status-${rule.id}`);
+        if (!el) continue;
+        const ms = res[rule.id] || 0;
+        const mins = Math.floor(ms / 60000);
+        const secs = Math.floor((ms % 60000) / 1000);
+        const period = rule.period === 'week' ? 'this week' : 'today';
+        el.textContent = `${period}: ${mins}m ${secs}s / ${rule.limit}m`;
+      }
+    });
+  }
+}
+
+$('add-usage-limit') && $('add-usage-limit').addEventListener('click', () => {
+  const newRule = { id: genId(), label: '', type: 'visit', pattern: '', limit: 1, period: 'day', enabled: true };
+  usageLimitRules.push(newRule);
+  expandedUsageIds.add(newRule.id);
+  renderUsageLimits();
+  // Scroll new card into view
+  const last = $('usage-limits-list').lastElementChild;
+  if (last) last.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+});
+
 function buildNewSettings() {
   const cleanRules = rules.filter((r) => r.text && r.text.trim()).map((r) => ({
     id: r.id || genId(),
     text: r.text,
     mode: r.mode || 'block',
     enabled: r.enabled !== false,
-    scope: Array.isArray(r.scope) ? Array.from(new Set(r.scope.flatMap(expandHost))) : []
+    scope: Array.isArray(r.scope) ? Array.from(new Set(r.scope.flatMap(expandHost))) : [],
+    strictness: r.strictness || null
   }));
   const allowDomains = Array.from(new Set($('allowDomains').value.split('\n').flatMap(expandHost)));
   const imageScannerExcludeDomains = Array.from(new Set($('imageScannerExcludeDomains').value.split('\n').flatMap(expandHost)));
@@ -429,7 +680,16 @@ function buildNewSettings() {
     personalContext: $('personalContext').value.trim(),
     personalContextOnHotPaths: $('personalContextOnHotPaths').checked,
     contentStrictness: $('contentStrictness').value,
-    appealStrictness: $('appealStrictness').value
+    appealStrictness: $('appealStrictness').value,
+    usageLimits: usageLimitRules.filter((r) => r.pattern).map((r) => ({
+      id: r.id || genId(),
+      label: (r.label || '').trim(),
+      type: r.type || 'visit',
+      pattern: r.pattern.trim(),
+      limit: Math.max(1, parseInt(r.limit, 10) || 1),
+      period: r.period || 'day',
+      enabled: r.enabled !== false
+    }))
   };
 }
 
@@ -442,7 +702,8 @@ function normalizeStoredSettings(stored) {
       text: r.text || '',
       mode: r.mode || 'block',
       enabled: r.enabled !== false,
-      scope: Array.isArray(r.scope) ? r.scope : []
+      scope: Array.isArray(r.scope) ? r.scope : [],
+      strictness: r.strictness || null
     })) : [],
     failMode: s.failMode || 'open',
     allowDomains: Array.isArray(s.allowDomains) ? s.allowDomains : [],
@@ -458,7 +719,8 @@ function normalizeStoredSettings(stored) {
     personalContext: (s.personalContext || '').trim(),
     personalContextOnHotPaths: s.personalContextOnHotPaths !== false,
     contentStrictness: s.contentStrictness || 'strict',
-    appealStrictness: s.appealStrictness || 'strict'
+    appealStrictness: s.appealStrictness || 'strict',
+    usageLimits: Array.isArray(s.usageLimits) ? s.usageLimits : []
   };
 }
 
@@ -489,14 +751,18 @@ function computeDiff(current, next) {
       const oldEnabled = old.enabled !== false;
       const newEnabled = r.enabled !== false;
       const enabledChanged = oldEnabled !== newEnabled;
-      if (textChanged || modeChanged || scopeChanged || enabledChanged) {
+      const oldStrictness = old.strictness || null;
+      const newStrictness = r.strictness || null;
+      const strictnessChanged = oldStrictness !== newStrictness;
+      if (textChanged || modeChanged || scopeChanged || enabledChanged || strictnessChanged) {
         diff.rules.modified.push({
           id: r.id,
           oldText: old.text, newText: r.text,
           oldMode: old.mode, newMode: r.mode,
           oldScope, newScope,
           oldEnabled, newEnabled,
-          textChanged, modeChanged, scopeChanged, enabledChanged
+          oldStrictness, newStrictness,
+          textChanged, modeChanged, scopeChanged, enabledChanged, strictnessChanged
         });
       }
     }
@@ -526,11 +792,15 @@ function computeDiff(current, next) {
   if (current.personalContext !== next.personalContext) {
     diff.personalContext = { old: current.personalContext, new: next.personalContext };
   }
+  if (JSON.stringify(current.usageLimits || []) !== JSON.stringify(next.usageLimits || [])) {
+    diff.usageLimits = true;
+  }
   return diff;
 }
 
 function isDiffEmpty(diff) {
   return !diff.personalContext &&
+    !diff.usageLimits &&
     diff.rules.added.length === 0 &&
     diff.rules.removed.length === 0 &&
     diff.rules.modified.length === 0 &&
@@ -596,6 +866,7 @@ function isPurelyStrengthening(diff) {
         if (effectiveMode === 'block' || effectiveMode === 'only-allow') return false;
       }
     }
+    if (m.strictnessChanged) return false;
   }
 
   for (const key of Object.keys(diff.settings)) {
@@ -658,11 +929,15 @@ async function commitSave(next) {
     personalContext: next.personalContext,
     personalContextOnHotPaths: next.personalContextOnHotPaths,
     contentStrictness: next.contentStrictness,
-    appealStrictness: next.appealStrictness
+    appealStrictness: next.appealStrictness,
+    usageLimits: next.usageLimits
   });
   await chrome.storage.local.remove('aisf-cache');
   rules = next.rules;
   renderRules();
+  usageLimitRules = next.usageLimits;
+  renderUsageLimits();
+  loadUsageStatus();
   $('allowDomains').value = next.allowDomains.join('\n');
   $('imageScannerExcludeDomains').value = next.imageScannerExcludeDomains.join('\n');
   showStatus('Saved.', 'ok');

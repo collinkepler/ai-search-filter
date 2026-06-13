@@ -8,6 +8,7 @@ const errorMsg = params.get('error') || '';
 const fromCache = params.get('fromCache') === '1';
 const raw = params.get('raw') || '';
 const originalUrl = params.get('originalUrl') || '';
+const cacheKey = params.get('cacheKey') || '';
 
 // Subtitle - show error context if there was one
 if (errorMsg) {
@@ -78,6 +79,13 @@ const appealResult = document.getElementById('appealResult');
 const appealResultLabel = document.getElementById('appealResultLabel');
 const appealResultReason = document.getElementById('appealResultReason');
 const appealResultActions = document.getElementById('appealResultActions');
+const appealFix = document.getElementById('appealFix');
+const appealFixRule = document.getElementById('appealFixRule');
+const appealFixScope = document.getElementById('appealFixScope');
+const appealFixAdd = document.getElementById('appealFixAdd');
+const appealFixStatus = document.getElementById('appealFixStatus');
+
+let pendingFix = null;
 
 if (!originalUrl) {
   appealBtn.disabled = true;
@@ -120,7 +128,8 @@ function submitAppeal() {
     query: q,
     matchedRule: rule,
     originalReason: reason,
-    appealText: text
+    appealText: text,
+    cacheKey
   }, (response) => {
     appealStatus.hidden = true;
     appealSubmit.disabled = false;
@@ -132,11 +141,11 @@ function submitAppeal() {
         (chrome.runtime.lastError && chrome.runtime.lastError.message || 'no response') + '.');
       return;
     }
-    showAppealResult(Boolean(response.overturned), response.reason || '(no reason returned)');
+    showAppealResult(Boolean(response.overturned), response.reason || '(no reason returned)', response.suggestedFix);
   });
 }
 
-function showAppealResult(overturned, reasonText) {
+function showAppealResult(overturned, reasonText, suggestedFix) {
   appealResult.hidden = false;
   appealResult.classList.toggle('overturned', overturned);
   appealResult.classList.toggle('upheld', !overturned);
@@ -150,4 +159,40 @@ function showAppealResult(overturned, reasonText) {
     go.addEventListener('click', () => { window.location.replace(originalUrl); });
     appealResultActions.appendChild(go);
   }
+
+  pendingFix = (overturned && suggestedFix && typeof suggestedFix.text === 'string' && suggestedFix.text.trim())
+    ? suggestedFix
+    : null;
+  appealFix.hidden = !pendingFix;
+  appealFixStatus.hidden = true;
+  appealFixStatus.classList.remove('error');
+  appealFixAdd.hidden = false;
+  appealFixAdd.disabled = false;
+  if (pendingFix) {
+    appealFixRule.textContent = pendingFix.text;
+    const scope = Array.isArray(pendingFix.scope) ? pendingFix.scope.filter(Boolean) : [];
+    appealFixScope.hidden = scope.length === 0;
+    appealFixScope.textContent = scope.length ? 'Only on: ' + scope.join(', ') : '';
+  }
 }
+
+appealFixAdd.addEventListener('click', () => {
+  if (!pendingFix) return;
+  appealFixAdd.disabled = true;
+  chrome.runtime.sendMessage({ type: 'applyAppealFix', rule: pendingFix }, (res) => {
+    if (chrome.runtime.lastError || !res || !res.ok) {
+      appealFixStatus.classList.add('error');
+      appealFixStatus.textContent = 'Could not add the rule: ' +
+        ((chrome.runtime.lastError && chrome.runtime.lastError.message) || (res && res.error) || 'no response');
+      appealFixStatus.hidden = false;
+      appealFixAdd.disabled = false;
+      return;
+    }
+    appealFixAdd.hidden = true;
+    appealFixStatus.classList.remove('error');
+    appealFixStatus.textContent = res.dedup
+      ? 'That exception rule already exists.'
+      : 'Exception added — it will apply on your next visit.';
+    appealFixStatus.hidden = false;
+  });
+});

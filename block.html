@@ -224,6 +224,41 @@
       display: flex;
       gap: 8px;
     }
+    .appeal-fix {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #1f3a23;
+    }
+    .appeal-fix[hidden] { display: none; }
+    .appeal-fix-intro {
+      font-size: 13px;
+      color: #a7f3d0;
+      margin-bottom: 8px;
+    }
+    .appeal-fix-rule {
+      background: #161616;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 12px;
+      color: #e5e5e5;
+      line-height: 1.5;
+      overflow-wrap: break-word;
+    }
+    .appeal-fix-scope {
+      font-size: 12px;
+      color: #888;
+      margin-top: 6px;
+    }
+    .appeal-fix-scope[hidden] { display: none; }
+    .appeal-fix-status {
+      margin-top: 8px;
+      font-size: 13px;
+      color: #22c55e;
+    }
+    .appeal-fix-status[hidden] { display: none; }
+    .appeal-fix-status.error { color: #ef4444; }
   </style>
 </head>
 <body>
@@ -274,6 +309,15 @@
       <div class="appeal-result" id="appealResult" hidden>
         <div class="appeal-result-label" id="appealResultLabel"></div>
         <div id="appealResultReason"></div>
+        <div class="appeal-fix" id="appealFix" hidden>
+          <div class="appeal-fix-intro">Add an exception rule so this doesn't get blocked again:</div>
+          <div class="appeal-fix-rule" id="appealFixRule"></div>
+          <div class="appeal-fix-scope" id="appealFixScope" hidden></div>
+          <div class="appeal-result-actions">
+            <button id="appealFixAdd">Add exception rule</button>
+          </div>
+          <div class="appeal-fix-status" id="appealFixStatus" hidden></div>
+        </div>
         <div class="appeal-result-actions" id="appealResultActions"></div>
       </div>
     </div>

@@ -41,6 +41,10 @@ Two stores in `chrome.storage.local`: `aisf-cache` (Layer 0) and `aisf-img-cache
 
 **Prompt caching.** The Layer 0 (`callClaudeForContext`) and Layer 3 (`callClaudeForPosts`) system prompts are sent to Anthropic as one-element content-block arrays with `cache_control: { type: 'ephemeral' }`. The savings only materialize when the system prompt exceeds Haiku 4.5's ~2048-token minimum cacheable prefix — i.e. heavy rule lists and/or a non-trivial `personalContext`. Under the threshold the marker is a documented no-op. `callAnthropic` passes `system` straight through to `JSON.stringify`, so callers that don't want caching (image, host-skip, appeal) keep sending a plain string.
 
+### Appeal feedback loop
+
+A granted appeal does more than the 1-hour URL bypass (`setAppealGrant`, kept as fallback for blocks without a cache key, e.g. usage limits). `checkContent` attaches the Layer 0 `cacheKey` to blocked responses, the content script forwards it to `block.html`, and `block.js` sends it back with the appeal. On overturn, `handleAppeal` purges the stale blocked verdict (all rules-hash variants via `invalidateCacheByPrefix`) and writes an allowed verdict at that exact key — the page stays unblocked for the normal cache lifetime and is invalidated by rule edits like any verdict. Do **not** re-add cache invalidation to the appeal-grant branch of `checkContent`; it would delete that freshly written verdict. Additionally, `callClaudeForAppeal` may return a `fix` (a narrow `allow`-mode rule + optional scope) when the false positive looks recurring; `block.js` renders it with an "Add exception rule" button which sends `applyAppealFix` to the service worker — that handler appends the rule (deduped by text) and clears `aisf-cache`, deliberately bypassing the rule-change appeal gate since Sonnet authored the rule during an already-strict review.
+
 ### Layer 3: per-site config
 
 [post-scanner.js:8](post-scanner.js#L8) `SITE_CONFIGS` is the extension point for feed-style sites. Each entry needs `match(hostname) → bool`, an array of `selectors` for post containers, and `extract(el) → string`. The scanner uses an IntersectionObserver + MutationObserver pair to handle infinite scroll, batches text in groups of 15 with a 600ms debounce ([post-scanner.js:62](post-scanner.js#L62)), and caches verdicts in-memory by exact post text within a page session. There is intentionally **no generic feed heuristic** — only the sites in `SITE_CONFIGS` get Layer 3.
@@ -69,7 +73,7 @@ All settings live in `chrome.storage.local`. Keys are accessed by string; there 
 ## Conventions to preserve
 
 - **Strict JSON-only prompts.** All three Claude prompts demand `Respond with ONLY valid JSON` and the response is parsed after stripping a possible ```` ```json ```` fence. Keep this format if you edit prompts; the parsers will throw otherwise.
-- **`describe()` and `block.html` query params.** When Layer 0 blocks, [content-script.js:65](content-script.js#L65) packs `q`, `rule`, `reason`, `error`, `fromCache`, `raw` into the block URL. `block.html` reads these — keep names in sync.
+- **`describe()` and `block.html` query params.** When Layer 0 blocks, [content-script.js:65](content-script.js#L65) packs `q`, `rule`, `reason`, `error`, `fromCache`, `raw`, `cacheKey` into the block URL. `block.html` reads these — keep names in sync (`cacheKey` rides back on the `appealBlock` message so a granted appeal can cache an allowed verdict).
 - **No frameworks, no transpilation.** Vanilla JS, IIFE-wrapped content scripts, `window.AISF*` exports between them. Don't introduce a bundler or npm dependencies for changes that don't need them — the zero-build property is a feature.
 - **`console.log('[AISF] ...')`** is the established log prefix. `DEBUG` in service-worker.js is currently `true`.
 
